@@ -1,0 +1,49 @@
+[Unit]
+Description=HypMesh, a public mesh of HypGraph records
+Documentation=https://github.com/voodoomods/hypmesh/blob/main/docs/deploy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hypmesh
+Group=hypmesh
+EnvironmentFile=/etc/hypmesh/hypmesh.env
+Environment=HYPMESH_DATA=/var/lib/hypmesh
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/hypmesh/venv/bin/hypmesh --data /var/lib/hypmesh serve --host 127.0.0.1 --port 8800
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+# Hardening: the mesh needs its data dir, the network and nothing else.
+StateDirectory=hypmesh
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=2G
+TasksMax=512
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

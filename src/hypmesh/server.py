@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import mimetypes
 import os
 import secrets
+import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -44,11 +47,17 @@ class Mesh:
 
     def __init__(self, data_dir: Path | str, *, base_url: str = "http://127.0.0.1:8800", orcid_client_id: str = "",
                  orcid_client_secret: str = "", orcid_host: str = "orcid.org", open_claims: int = 3,
-                 writes_per_minute: int = 120, excluded: tuple[str, ...] = ()):
+                 writes_per_minute: int = 120, excluded: tuple[str, ...] = (),
+                 trusted_proxies: tuple[str, ...] = ("127.0.0.1", "::1"), max_streams: int = 64, access_log: bool = False):
         self.data = Path(data_dir).expanduser()
         self.data.mkdir(parents=True, exist_ok=True)
         self.base_url = base_url.rstrip("/")
         self.orcid = {"client_id": orcid_client_id, "client_secret": orcid_client_secret, "host": orcid_host}
+        # behind a reverse proxy: whose X-Forwarded-For to believe, how many event streams may be open at once,
+        # and whether to write one access-log line per request to stderr (journald under systemd)
+        self.trusted_proxies = tuple(x.strip() for x in trusted_proxies if x.strip())
+        self.max_streams = max(1, int(max_streams))
+        self.access_log = bool(access_log)
         self.ids = Identities(self.data / "mesh.db")
         self.q = Questions(self.data, excluded)
         self.instrument_token = self._token("instrument")
@@ -76,7 +85,10 @@ class Mesh:
                    base_url=env("HYPMESH_BASE_URL", "http://127.0.0.1:8800"),
                    orcid_client_id=env("HYPMESH_ORCID_CLIENT_ID", ""), orcid_client_secret=env("HYPMESH_ORCID_CLIENT_SECRET", ""),
                    orcid_host=env("HYPMESH_ORCID_HOST", "orcid.org"), open_claims=int(env("HYPMESH_OPEN_CLAIMS", "3")),
-                   writes_per_minute=int(env("HYPMESH_WRITES_PER_MINUTE", "120")), excluded=excluded)
+                   writes_per_minute=int(env("HYPMESH_WRITES_PER_MINUTE", "120")), excluded=excluded,
+                   trusted_proxies=tuple(env("HYPMESH_TRUSTED_PROXIES", "127.0.0.1,::1").split(",")),
+                   max_streams=int(env("HYPMESH_MAX_STREAMS", "64")),
+                   access_log=env("HYPMESH_ACCESS_LOG", "0").strip().lower() in ("1", "true", "yes", "on"))
 
     def status(self, qid: str) -> dict:
         return S.question_status(self.q.graph(qid), self.ids, qid)
@@ -225,18 +237,57 @@ TERMS = """<section class="hero"><h1>Terms, in plain words.</h1></section><secti
 <p><b>Agents run on your side.</b> The mesh holds records. Your agents' models, tools and files are yours; <a href="https://hypdmz.com">HypDMZ</a> is the recommended sandbox for running them.</p></section>"""
 
 
+def _is_trusted(addr: str, trusted: tuple[str, ...]) -> bool:
+    """Is ``addr`` one of the trusted proxies (addresses or CIDR ranges)?"""
+    try:
+        ip = ipaddress.ip_address(addr.strip().strip("[]"))
+    except ValueError:
+        return False
+    for t in trusted:
+        try:
+            if ip in ipaddress.ip_network(t, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 # ── the handler ──────────────────────────────────────────────────────────────────────────────────────────────
 
 def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> ThreadingHTTPServer:
     ui = static_dir()
     assets = HERE / "static"
     secure = mesh.base_url.startswith("https://")
+    # a public mesh accepts its own origin only; a mesh served on loopback also accepts other loopback origins
+    loopback_base = urlparse(mesh.base_url).hostname in ("127.0.0.1", "localhost", "::1")
+    streams = threading.BoundedSemaphore(mesh.max_streams)
 
     class H(BaseHTTPRequestHandler):
         server_version = f"hypmesh/{__version__}"
+        sys_version = ""
+        timeout = 30          # a client that stops sending mid-request is dropped instead of holding a thread
 
         def log_message(self, fmt, *args):  # noqa: A003
             pass
+
+        def log_request(self, code="-", size="-"):  # noqa: D401
+            if not mesh.access_log:
+                return
+            path = urlparse(getattr(self, "path", "") or "").path    # never the query: /callback carries code and state
+            print(f'{self._client()} "{getattr(self, "command", "-")} {path}" {code}', file=sys.stderr, flush=True)
+
+        def _client(self) -> str:
+            """The caller's address: the socket peer, or, when the peer is a trusted proxy, the nearest address in
+            X-Forwarded-For that is not one of ours."""
+            peer = self.client_address[0] if self.client_address else "-"
+            if not _is_trusted(peer, mesh.trusted_proxies):
+                return peer
+            headers = getattr(self, "headers", None)      # unset when a request line could not be parsed
+            hops = [h.strip() for h in ((headers.get("X-Forwarded-For") if headers else "") or "").split(",") if h.strip()]
+            for h in reversed(hops):
+                if not _is_trusted(h, mesh.trusted_proxies):
+                    return h
+            return hops[0] if hops else peer
 
         # ── plumbing ──
         def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
@@ -246,7 +297,8 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "same-origin")
             for k, v in (extra or {}).items():
-                self.send_header(k, v)
+                for one in (v if isinstance(v, (list, tuple)) else [v]):
+                    self.send_header(k, one)
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
@@ -277,7 +329,9 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
             origin = self.headers.get("Origin") or ""
             if site and site not in ("same-origin", "none"):
                 return False
-            return not origin or origin.rstrip("/") == mesh.base_url or urlparse(origin).hostname in ("127.0.0.1", "localhost")
+            if not origin or origin.rstrip("/") == mesh.base_url:
+                return True
+            return loopback_base and urlparse(origin).hostname in ("127.0.0.1", "localhost", "::1")
 
         def _body(self) -> dict:
             n = int(self.headers.get("Content-Length") or 0)
@@ -364,7 +418,13 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                 sub = rest[len("api/graph"):]
                 g = mesh.q.graph(qid)
                 if sub.strip("/") == "stream":
-                    return self._stream(g, q)
+                    if not streams.acquire(blocking=False):
+                        return self._send(503, json.dumps({"detail": f"{mesh.max_streams} event streams are open; retry shortly"}).encode(),
+                                          "application/json", {"Retry-After": "10"})
+                    try:
+                        return self._stream(g, q)
+                    finally:
+                        streams.release()
                 status, obj = dispatch(g, "GET", sub, query=q)
                 return self._json(status, obj)
             return self._json(404, {"detail": "no such route"})
@@ -448,7 +508,8 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
             except ValueError as e:
                 return self._json(400, {"detail": str(e)})
             sid = mesh.ids.open_session(orcid)
-            self._redirect("/me", {"Set-Cookie": f"hm_session={sid}; Path=/; HttpOnly; SameSite=Lax{'; Secure' if secure else ''}; Max-Age=2592000"})
+            self._redirect("/me", {"Set-Cookie": [f"hm_session={sid}; Path=/; HttpOnly; SameSite=Lax{'; Secure' if secure else ''}; Max-Age=2592000",
+                                                  f"hm_state=; Path=/; HttpOnly; SameSite=Lax{'; Secure' if secure else ''}; Max-Age=0"]})
 
         # ── POST ──
         def do_POST(self):  # noqa: N802

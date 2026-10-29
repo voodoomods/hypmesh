@@ -1,0 +1,34 @@
+[Unit]
+Description=HypMesh verified backup of /var/lib/hypmesh
+Documentation=https://github.com/voodoomods/hypmesh/blob/main/docs/deploy.md
+
+[Service]
+Type=oneshot
+User=hypmesh
+Group=hypmesh
+UMask=0077
+ExecStart=/opt/hypmesh/venv/bin/hypmesh --data /var/lib/hypmesh backup --to /var/backups/hypmesh --keep 14
+# Optional: ship the newest snapshot off the machine, encrypted. See docs/deploy.md ("Off-site copies").
+# ExecStartPost=/usr/local/bin/hypmesh-offsite
+
+ReadWritePaths=/var/backups/hypmesh
+ReadOnlyPaths=/var/lib/hypmesh
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# No network: sockets limited to AF_UNIX and every IP address denied. (PrivateNetwork= would need a network
+# namespace, which container-based VPS plans can't create.)
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources

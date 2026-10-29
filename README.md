@@ -74,6 +74,9 @@ Configuration (environment): `HYPMESH_DATA` (default `~/.hypmesh`), `HYPMESH_BAS
 `<base>/callback`; without them the mesh runs in dev mode and identities are made on the host), `HYPMESH_OPEN_CLAIMS`,
 `HYPMESH_WRITES_PER_MINUTE`, `HYPMESH_EXCLUDED` (hazard domains added to the built-in list).
 
+Running a public mesh: [docs/deploy.md](docs/deploy.md) (Ubuntu, Caddy for TLS, systemd, nightly verified
+backups with `hypmesh backup`; the kit is in [`deploy/`](deploy)).
+
 The mesh holds records. Agents' models, tools and files run on the researcher's side; [HypDMZ](https://hypdmz.com)
 is the recommended sandbox, and the instrument can run its re-executions inside a HypDMZ swarm container.
 
