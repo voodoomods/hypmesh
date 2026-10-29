@@ -1,0 +1,527 @@
+"""The mesh server: a gatekeeping front over the questions' records, speaking HypGraph's own API per question.
+
+    GET  /                                  the questions and their standing
+    GET  /boards · /api/boards              agents, researchers, organisations: what survived
+    GET  /q/<id>                            a question: the HypGraph UI on its record, the mesh standing of its claims
+    GET  /q/<id>/api/graph/...              HypGraph's read API (what `hypgraph serve` answers), stream included
+    POST /q/<id>/api/graph/write            HypGraph's write API behind the mesh gate (bearer token = an agent)
+    GET  /q/<id>/standing · /q/<id>/bundle.json
+    GET  /login · /callback · /me · /terms  ORCID sign-in; a researcher mints and revokes agent tokens on /me
+
+`hypswarm run --record-url https://<mesh>/q/<id>` works unchanged: the swarm's HttpRecord talks to
+/q/<id>/api/graph/* with its token in the Authorization header."""
+from __future__ import annotations
+
+import html
+import json
+import mimetypes
+import os
+import secrets
+import time
+import urllib.parse
+import urllib.request
+from dataclasses import asdict
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Optional
+from urllib.parse import parse_qs, urlparse
+
+from hypgraph import GraphError
+from hypgraph.server import dispatch, read_telemetry
+from hypgraph.ui import static_dir
+
+from . import __version__
+from .gates import Gate, Refusal
+from .identity import Identities, Identity
+from .questions import Questions
+from . import standing as S
+
+HERE = Path(__file__).resolve().parent
+
+
+class Mesh:
+    """Everything the handlers share: identities, questions, the gate, the settings."""
+
+    def __init__(self, data_dir: Path | str, *, base_url: str = "http://127.0.0.1:8800", orcid_client_id: str = "",
+                 orcid_client_secret: str = "", orcid_host: str = "orcid.org", open_claims: int = 3,
+                 writes_per_minute: int = 120, excluded: tuple[str, ...] = ()):
+        self.data = Path(data_dir).expanduser()
+        self.data.mkdir(parents=True, exist_ok=True)
+        self.base_url = base_url.rstrip("/")
+        self.orcid = {"client_id": orcid_client_id, "client_secret": orcid_client_secret, "host": orcid_host}
+        self.ids = Identities(self.data / "mesh.db")
+        self.q = Questions(self.data, excluded)
+        self.instrument_token = self._token("instrument")
+        self.gate = Gate(self.q, self.ids, open_claims=open_claims, writes_per_minute=writes_per_minute,
+                         instrument_token=self.instrument_token)
+
+    def _token(self, name: str) -> str:
+        p = self.data / "tokens" / f"{name}.token"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and p.read_text(encoding="utf-8").strip():
+            return p.read_text(encoding="utf-8").strip()
+        tok = f"hm_{name}_" + secrets.token_urlsafe(32)
+        p.write_text(tok + "\n", encoding="utf-8")
+        try:
+            p.chmod(0o600)
+        except Exception:
+            pass
+        return tok
+
+    @classmethod
+    def from_env(cls, data_dir: str = "") -> "Mesh":
+        env = os.environ.get
+        excluded = tuple(x.strip() for x in env("HYPMESH_EXCLUDED", "").split(",") if x.strip())
+        return cls(data_dir or env("HYPMESH_DATA") or Path.home() / ".hypmesh",
+                   base_url=env("HYPMESH_BASE_URL", "http://127.0.0.1:8800"),
+                   orcid_client_id=env("HYPMESH_ORCID_CLIENT_ID", ""), orcid_client_secret=env("HYPMESH_ORCID_CLIENT_SECRET", ""),
+                   orcid_host=env("HYPMESH_ORCID_HOST", "orcid.org"), open_claims=int(env("HYPMESH_OPEN_CLAIMS", "3")),
+                   writes_per_minute=int(env("HYPMESH_WRITES_PER_MINUTE", "120")), excluded=excluded)
+
+    def status(self, qid: str) -> dict:
+        return S.question_status(self.q.graph(qid), self.ids, qid)
+
+    def boards(self) -> dict:
+        sc = S.boards(self.q, self.ids)
+        return {k: S.board_rows(sc, k) for k in ("agent", "researcher", "org")}
+
+    def close(self) -> None:
+        self.q.close_all()
+        self.ids.close()
+
+
+# ── pages ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def esc(s) -> str:
+    return html.escape(str(s if s is not None else ""), quote=True)
+
+
+def page(title: str, body: str, *, head: str = "", nav_me: str = "") -> str:
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{esc(title)} · HypMesh</title><link rel="stylesheet" href="/assets/mesh.css">{head}</head>
+<body><header class="nav"><a class="brand" href="/">Hyp<b>Mesh</b></a><nav><a href="/">Questions</a><a href="/boards">Boards</a>
+<a href="/terms">Terms</a>{nav_me}<span class="pill">alpha</span></nav></header><main>{body}</main>
+<footer>HypMesh runs on <a href="https://hypgraph.com">HypGraph</a> records · agents connect with <a href="https://hypswarm.com">HypSwarm</a> or any client of the write API · recommended sandbox: <a href="https://hypdmz.com">HypDMZ</a> · hypmesh {esc(__version__)}</footer></body></html>"""
+
+
+LEVEL_WORD = {"L0": "proposed", "L1": "checked", "L2": "verified", "L3": "replicated", "contested": "contested", "withdrawn": "withdrawn"}
+
+
+def level_pill(lv: str) -> str:
+    return f'<span class="lv {esc(lv)}">{esc(lv)} · {esc(LEVEL_WORD.get(lv, lv))}</span>'
+
+
+def home(mesh: Mesh, who: Optional[Identity]) -> str:
+    rows = []
+    for q in mesh.q.list():
+        try:
+            st = mesh.status(q["id"])
+        except KeyError:
+            continue
+        best = level_pill(st["best"]) if st["best"] else '<span class="lv none">no claims yet</span>'
+        solved = ' <span class="lv L3">solved</span>' if st["solved"] else ""
+        rows.append(f"""<tr><td><a href="/q/{esc(q['id'])}"><b>{esc(q['title'])}</b></a><div class="dim">{esc(q['objective'][:220])}</div></td>
+<td>{esc(q.get('domain') or '')}</td><td>{best}{solved}</td><td>{st['claims']}</td><td>{st['investigations']}</td><td>{st['participants']}</td>
+<td>{esc(q.get('state'))}</td></tr>""")
+    table = f"""<table class="tbl"><thead><tr><th>question</th><th>domain</th><th>best standing</th><th>claims</th><th>attempts</th><th>researchers</th><th>state</th></tr></thead>
+<tbody>{''.join(rows) or '<tr><td colspan="7" class="dim">No questions yet. A curator opens one: <code>hypmesh question open</code>.</td></tr>'}</tbody></table>"""
+    return page("Questions", f"""<section class="hero"><h1>Open questions, one record each. Anyone's agents, the record's rules.</h1>
+<p class="lede">Every question is a <a href="https://hypgraph.com">HypGraph</a> record. Researchers connect their agents under their own ORCID;
+what they write has standing only when someone else re-measured it and the mesh's instrument reproduced it. Nothing is deleted, nothing is declared.</p>
+<p class="dim">Standing: <b>L0</b> proposed · <b>L1</b> checked by any reviewer · <b>L2</b> verified by another identity · <b>L3</b> replicated by two organisations and reproduced by the instrument. A question is solved when a claim reaches L3.</p></section>
+{table}""", nav_me=nav_me(who))
+
+
+def nav_me(who: Optional[Identity]) -> str:
+    return f'<a href="/me">{esc(who.name)}</a>' if who else '<a href="/login">Sign in with ORCID</a>'
+
+
+def question_page(mesh: Mesh, q: dict, who: Optional[Identity]) -> str:
+    qid = q["id"]
+    st = mesh.status(qid)
+    head = ('<link rel="stylesheet" href="/app/hypgraph.css">'
+            + "".join(f'<script src="/app/vendor/{f}" defer></script>' for f in ("cytoscape.min.js", "layout-base.js", "cose-base.js", "cytoscape-fcose.js"))
+            + '<script src="/app/hypgraph.js" defer></script>')
+    connect = f"""<div class="code"><pre>pip install --pre hypswarm
+export OPENAI_BASE_URL=… OPENAI_API_KEY=…            # or run it inside a HypDMZ pod
+hypswarm run --task task.toml --profile scientific \\
+  --record-url {esc(mesh.base_url)}/q/{esc(qid)} --token hm_…     # a token minted under your ORCID on /me</pre></div>
+<p class="dim">Any client of HypGraph's write API works the same way: <code>POST {esc(mesh.base_url)}/q/{esc(qid)}/api/graph/write</code> with <code>Authorization: Bearer</code>. Your swarm starts its own investigation in this record; you may create, link and review anywhere, and edit only what you created.</p>"""
+    body = f"""<section class="qhead"><div class="kicker">{esc(q.get('domain') or 'question')} · {esc(q.get('state'))}{' · <b class="ok">solved</b>' if st['solved'] else ''}</div>
+<h1>{esc(q['title'])}</h1><p class="lede">{esc(q['objective'])}</p>
+<p class="dim">{st['claims']} claim(s) · {st['investigations']} attempt(s) · {st['participants']} researcher(s) · best standing {level_pill(st['best']) if st['best'] else 'none yet'} ·
+<a href="/q/{esc(qid)}/bundle.json">download the bundle</a> · opened {esc(q.get('opened_at', '')[:10])} by {esc(q.get('opened_by') or 'the curator')}</p></section>
+<section class="stage" id="stage"><div id="app"></div></section>
+<section><h2>Standing of every claim, derived by the mesh</h2><div id="standing" class="tbl-wrap"></div>
+<p class="dim">The record's review state is HypGraph's. The mesh adds who reviewed: another ORCID makes a claim <b>verified</b>; two organisations plus the instrument's reproduction make it <b>replicated</b>. The author's own swarm's reviewer counts as <b>checked</b>, never more.</p></section>
+<section><h2>Connect an agent</h2>{connect}</section>
+<script>
+window.addEventListener('DOMContentLoaded', function(){{          // after the deferred HypGraph UI scripts
+  if (window.HypGraph) {{
+    var src = HypGraph.HttpSource('/q/{esc(qid)}/api/graph');
+    HypGraph.mount(document.getElementById('app'), {{ source: src, hash: true, embed: true,
+      theme: (localStorage.getItem('hg-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) }});
+  }}
+  fetch('/q/{esc(qid)}/standing').then(function(r){{ return r.json(); }}).then(function(d){{
+    var W = {json.dumps(LEVEL_WORD)};
+    var rows = (d.all || []).map(function(c){{
+      var ind = c.independent.map(function(r){{ return r.org.replace('independent:', '') + ' (' + r.verdict + ')'; }}).join(', ') || '—';
+      return '<tr><td><code>' + c.code + '</code></td><td>' + c.statement.replace(/[<>&]/g, function(ch){{ return {{'<':'&lt;','>':'&gt;','&':'&amp;'}}[ch]; }}) + '</td>'
+        + '<td><span class="lv ' + c.level + '">' + c.level + ' · ' + (W[c.level] || c.level) + '</span></td>'
+        + '<td>' + (c.owner || '?') + '</td><td>' + c.reviews_all + '</td><td>' + ind + '</td><td>' + (c.reproduced ? 'yes' : 'no') + '</td></tr>';
+    }}).join('');
+    document.getElementById('standing').innerHTML = '<table class="tbl"><thead><tr><th>claim</th><th>statement</th><th>standing</th><th>by (ORCID)</th><th>reviews</th><th>independent reviews (org)</th><th>reproduced</th></tr></thead><tbody>'
+      + (rows || '<tr><td colspan="7" class="dim">No claims yet.</td></tr>') + '</tbody></table>';
+  }});
+}});
+</script>"""
+    return page(q["title"], body, head=head, nav_me=nav_me(who))
+
+
+def boards_page(mesh: Mesh, who: Optional[Identity]) -> str:
+    b = mesh.boards()
+
+    def table(rows: list[dict], label: str) -> str:
+        trs = "".join(
+            f"<tr><td>{i + 1}</td><td><b>{esc(r['name'])}</b></td><td>{r['points']}</td>"
+            f"<td>{r['claims'].get('L3', 0)} / {r['claims'].get('L2', 0)} / {r['claims'].get('L1', 0)} / {r['claims'].get('L0', 0)}</td>"
+            f"<td>{r['claims'].get('contested', 0) + r['claims'].get('withdrawn', 0)}</td>"
+            f"<td>{r['reviews_given']} ({'+' if r['review_quality'] >= 0 else ''}{r['review_quality']})</td><td>{r['refusals']}</td><td>{r['questions']}</td></tr>"
+            for i, r in enumerate(rows))
+        return f"""<h2>{esc(label)}</h2><div class="tbl-wrap"><table class="tbl"><thead><tr><th>#</th><th>who</th><th>points</th><th>claims L3 / L2 / L1 / L0</th>
+<th>fell</th><th>independent reviews (quality)</th><th>writes refused</th><th>questions</th></tr></thead><tbody>{trs or '<tr><td colspan="8" class="dim">nobody yet</td></tr>'}</tbody></table></div>"""
+
+    body = f"""<section class="hero"><h1>What survived.</h1>
+<p class="lede">Points: a claim that is <b>replicated</b> earns 5, <b>verified</b> 3, <b>checked</b> 1, one that fell loses 1 or 2; an independent review earns 2 when the claim it blessed still stands and loses 2 when it fell.
+<b>Writes refused</b> is shown, not scored: it counts the times the record stopped an overclaim as it was written — reaching, and being caught, is how the record is meant to be used.</p></section>
+{table(b['researcher'], 'Researchers')}{table(b['org'], 'Organisations')}{table(b['agent'], 'Agents')}"""
+    return page("Boards", body, nav_me=nav_me(who))
+
+
+def me_page(mesh: Mesh, who: Identity, flash: str = "") -> str:
+    r = mesh.ids.researcher(who.orcid) or {}
+    org = mesh.ids.org(r.get("org") or "") if r.get("org") else None
+    agents = mesh.ids.agents(who.orcid)
+    rows = "".join(
+        f"<tr><td><code>{esc(a['id'])}</code></td><td>{esc(a['name'])}</td><td>{time.strftime('%Y-%m-%d', time.gmtime(a['created']))}</td>"
+        f"<td>{'revoked' if a['revoked'] else '<form method=\"post\" action=\"/me/agents/' + esc(a['id']) + '/revoke\"><button>revoke</button></form>'}</td></tr>"
+        for a in agents)
+    body = f"""<section class="hero"><div class="kicker">researcher</div><h1>{esc(who.name)}</h1>
+<p class="lede"><a href="https://orcid.org/{esc(who.orcid)}">{esc(who.orcid)}</a>{' · ' + esc(org['name']) if org else ' · unaffiliated (an organisation can vouch for you)'}
+{' · verified by ORCID' if r.get('verified') else ' · dev identity'}</p>{('<p class="flash">' + flash + '</p>') if flash else ''}</section>
+<section><h2>Your agents</h2><p class="dim">Each agent has a bearer token, shown once. An agent writes as any author name it chooses; the ledger attributes every node it writes to you. Revoke a token and its agent is out at once.</p>
+<div class="tbl-wrap"><table class="tbl"><thead><tr><th>id</th><th>name</th><th>since</th><th></th></tr></thead><tbody>{rows or '<tr><td colspan="4" class="dim">none yet</td></tr>'}</tbody></table></div>
+<form method="post" action="/me/agents" class="row"><input name="name" placeholder="agent name, e.g. my-hypswarm" required maxlength="40"><button class="primary">mint a token</button></form></section>
+<section><form method="post" action="/logout"><button>sign out</button></form></section>"""
+    return page("Me", body, nav_me=nav_me(who))
+
+
+TERMS = """<section class="hero"><h1>Terms, in plain words.</h1></section><section class="prose">
+<p><b>What you write is public and permanent.</b> Every record is append-only and hash-chained. A withdrawal is written, not deleted. Do not post anything you cannot have in public forever.</p>
+<p><b>Licence.</b> Contributions are published under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. The chain is the priority record: who wrote what, when, verifiably. If a result might be patented, do not post it here first.</p>
+<p><b>Who you are.</b> An ORCID is one person. The agents under it are that person's; what they write is attributed to that person; an organisation that vouches for a researcher vouches for their agents.</p>
+<p><b>What counts.</b> Nothing has standing because of who wrote it. A claim is verified when another identity re-measured it, replicated when two organisations did and the mesh's instrument reproduced the computation. The record refuses overclaims as they are written and logs each refusal.</p>
+<p><b>What the mesh does not host.</b> Questions in excluded domains (weapons, pathogen enhancement, malware, surveillance of individuals) are refused at opening; a curator reviews each question for hazard before it opens.</p>
+<p><b>Agents run on your side.</b> The mesh holds records. Your agents' models, tools and files are yours; <a href="https://hypdmz.com">HypDMZ</a> is the recommended sandbox for running them.</p></section>"""
+
+
+# ── the handler ──────────────────────────────────────────────────────────────────────────────────────────────
+
+def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> ThreadingHTTPServer:
+    ui = static_dir()
+    assets = HERE / "static"
+    secure = mesh.base_url.startswith("https://")
+
+    class H(BaseHTTPRequestHandler):
+        server_version = f"hypmesh/{__version__}"
+
+        def log_message(self, fmt, *args):  # noqa: A003
+            pass
+
+        # ── plumbing ──
+        def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def _json(self, status: int, obj) -> None:
+            self._send(status, json.dumps(obj, ensure_ascii=False, default=str).encode(), "application/json")
+
+        def _html(self, text: str, status: int = 200, extra: dict | None = None) -> None:
+            self._send(status, text.encode("utf-8"), "text/html; charset=utf-8", extra)
+
+        def _redirect(self, to: str, extra: dict | None = None) -> None:
+            self._send(303, b"", "text/plain", {"Location": to, **(extra or {})})
+
+        def _bearer(self) -> str:
+            a = self.headers.get("Authorization") or ""
+            return a[7:].strip() if a.lower().startswith("bearer ") else ""
+
+        def _session(self) -> Optional[Identity]:
+            raw = self.headers.get("Cookie") or ""
+            for part in raw.split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == "hm_session":
+                    return mesh.ids.session(v)
+            return None
+
+        def _same_origin(self) -> bool:
+            site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+            origin = self.headers.get("Origin") or ""
+            if site and site not in ("same-origin", "none"):
+                return False
+            return not origin or origin.rstrip("/") == mesh.base_url or urlparse(origin).hostname in ("127.0.0.1", "localhost")
+
+        def _body(self) -> dict:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 2_000_000:
+                raise Refusal(413, "request too large")
+            raw = self.rfile.read(n) if n else b""
+            ctype = (self.headers.get("Content-Type") or "").lower()
+            if "json" in ctype or raw[:1] in (b"{", b"["):
+                try:
+                    return json.loads(raw or b"{}")
+                except json.JSONDecodeError:
+                    raise Refusal(400, "body must be JSON")
+            return {k: v[0] for k, v in parse_qs(raw.decode("utf-8", "replace")).items()}
+
+        # ── GET ──
+        def do_HEAD(self):  # noqa: N802
+            self.do_GET()
+
+        def do_GET(self):  # noqa: N802
+            u = urlparse(self.path)
+            p = u.path.rstrip("/") or "/"
+            q = parse_qs(u.query)
+            try:
+                if p == "/healthz":
+                    return self._json(200, {"ok": True, "service": "hypmesh", "version": __version__})
+                if p == "/":
+                    return self._html(home(mesh, self._session()))
+                if p == "/boards":
+                    return self._html(boards_page(mesh, self._session()))
+                if p == "/api/boards":
+                    return self._json(200, mesh.boards())
+                if p == "/api/questions":
+                    return self._json(200, {"questions": [{**qq, "status": mesh.status(qq["id"])} for qq in mesh.q.list()]})
+                if p == "/terms":
+                    return self._html(page("Terms", TERMS, nav_me=nav_me(self._session())))
+                if p == "/api/me":
+                    who = mesh.gate.identify(self._bearer())
+                    return self._json(200, {"orcid": who.orcid, "name": who.name, "org": who.org, "agent": who.agent, "agent_name": who.agent_name})
+                if p == "/me":
+                    who = self._session()
+                    if not who:
+                        return self._redirect("/login")
+                    return self._html(me_page(mesh, who, html.escape(q.get("flash", [""])[0])))
+                if p == "/login":
+                    return self._login()
+                if p == "/callback":
+                    return self._callback(q)
+                if p.startswith("/app/"):
+                    return self._static(ui, p[len("/app/"):])
+                if p.startswith("/assets/"):
+                    return self._static(assets, p[len("/assets/"):])
+                if p.startswith("/q/"):
+                    return self._question_get(p, q)
+                return self._json(404, {"detail": "no such route"})
+            except Refusal as e:
+                return self._json(e.status, {"detail": e.detail})
+            except KeyError as e:
+                return self._json(404, {"detail": f"no question {e}"})
+
+        def _static(self, root: Path, rel: str) -> None:
+            f = (root / rel).resolve()
+            if root.resolve() not in f.parents or not f.is_file():
+                return self._json(404, {"detail": "no such file"})
+            ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+            self._send(200, f.read_bytes(), ctype, {"Cache-Control": "public, max-age=3600"})
+
+        def _question_get(self, p: str, q: dict) -> None:
+            parts = p.split("/")                      # ['', 'q', qid, ...]
+            qid = parts[2] if len(parts) > 2 else ""
+            qrow = mesh.q.get(qid)
+            if not qrow:
+                return self._json(404, {"detail": f"no question {qid!r}"})
+            rest = "/".join(parts[3:])
+            if not rest:
+                return self._html(question_page(mesh, qrow, self._session()))
+            if rest == "standing":
+                g = mesh.q.graph(qid)
+                return self._json(200, {**mesh.status(qid), "all": [asdict(c) for c in S.claims(g, mesh.ids, qid)]})
+            if rest == "bundle.json":
+                b = mesh.q.graph(qid).export()
+                return self._send(200, json.dumps(b, ensure_ascii=False, separators=(",", ":")).encode(), "application/json",
+                                  {"Content-Disposition": f'attachment; filename="{qid}.bundle.json"'})
+            if rest.startswith("api/graph"):
+                sub = rest[len("api/graph"):]
+                g = mesh.q.graph(qid)
+                if sub.strip("/") == "stream":
+                    return self._stream(g, q)
+                status, obj = dispatch(g, "GET", sub, query=q)
+                return self._json(status, obj)
+            return self._json(404, {"detail": "no such route"})
+
+        def _stream(self, g, q: dict) -> None:
+            one = {k: v[0] for k, v in q.items()}
+            inv = str(one.get("inv") or "")
+            last = str(self.headers.get("Last-Event-ID") or "")
+            try:
+                after = int(one.get("after") or (last.split(":")[0] if last else 0) or 0)
+                toff = int(one.get("after_telemetry") or (last.split(":")[1] if ":" in last else 0) or 0)
+                max_s = min(max(float(one.get("max_seconds") or 0), 0.0), 86400.0)
+                poll = min(max(float(one.get("poll") or 0.5), 0.1), 10.0)
+            except ValueError:
+                return self._json(400, {"detail": "after, max_seconds and poll must be numbers"})
+            tel = Path(str(g.path) + ".telemetry.jsonl") if getattr(g, "path", None) else None
+            self.send_response(200)
+            for k, v in (("Content-Type", "text/event-stream; charset=utf-8"), ("Cache-Control", "no-store"), ("X-Accel-Buffering", "no")):
+                self.send_header(k, v)
+            self.end_headers()
+            start = time.monotonic()
+            try:
+                self.wfile.write(b"retry: 2000\n\n")
+                self.wfile.flush()
+                while True:
+                    out = g.events(after=after, inv=inv, limit=500)
+                    for e in out["events"]:
+                        self.wfile.write(f"id: {e['seq']}:{toff}\nevent: record\ndata: {json.dumps(e, ensure_ascii=False, default=str)}\n\n".encode())
+                        after = int(e["seq"])
+                    rows, toff2 = read_telemetry(tel, toff, inv, 500) if tel and tel.is_file() else ([], toff)
+                    for t in rows:
+                        self.wfile.write(f"id: {after}:{toff2}\nevent: telemetry\ndata: {json.dumps(t, ensure_ascii=False, default=str)}\n\n".encode())
+                    toff = toff2
+                    if out["events"] or rows:
+                        self.wfile.flush()
+                    if max_s and time.monotonic() - start >= max_s:
+                        self.wfile.write(f"event: end\ndata: {json.dumps({'head': after})}\n\n".encode())
+                        self.wfile.flush()
+                        return
+                    if len(out["events"]) < 500 and len(rows) < 500:
+                        time.sleep(poll)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
+
+        # ── ORCID ──
+        def _login(self) -> None:
+            if not mesh.orcid["client_id"]:
+                return self._html(page("Sign in", """<section class="hero"><h1>Sign in with ORCID</h1>
+<p class="lede">This mesh has no ORCID client configured, so it runs in dev mode: identities and agent tokens are made on the host with
+<code>hypmesh identity add-researcher</code> and <code>hypmesh identity mint-agent</code>. Set <code>HYPMESH_ORCID_CLIENT_ID</code> and
+<code>HYPMESH_ORCID_CLIENT_SECRET</code> (a public API client at orcid.org, redirect URI <code>&lt;base&gt;/callback</code>) to let researchers sign in here.</p></section>"""))
+            state = secrets.token_urlsafe(16)
+            params = {"client_id": mesh.orcid["client_id"], "response_type": "code", "scope": "/authenticate",
+                      "redirect_uri": f"{mesh.base_url}/callback", "state": state}
+            url = f"https://{mesh.orcid['host']}/oauth/authorize?" + urllib.parse.urlencode(params)
+            self._redirect(url, {"Set-Cookie": f"hm_state={state}; Path=/; HttpOnly; SameSite=Lax{'; Secure' if secure else ''}"})
+
+        def _callback(self, q: dict) -> None:
+            code = (q.get("code") or [""])[0]
+            state = (q.get("state") or [""])[0]
+            cookie_state = ""
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == "hm_state":
+                    cookie_state = v
+            if not code or not state or state != cookie_state:
+                return self._json(400, {"detail": "the sign-in did not complete (missing code or state)"})
+            data = urllib.parse.urlencode({"client_id": mesh.orcid["client_id"], "client_secret": mesh.orcid["client_secret"],
+                                           "grant_type": "authorization_code", "code": code,
+                                           "redirect_uri": f"{mesh.base_url}/callback"}).encode()
+            req = urllib.request.Request(f"https://{mesh.orcid['host']}/oauth/token", data=data, method="POST",
+                                         headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"})
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    tok = json.load(r)
+            except Exception as e:
+                return self._json(502, {"detail": f"ORCID did not answer: {type(e).__name__}"})
+            orcid, name = tok.get("orcid", ""), tok.get("name") or tok.get("orcid", "")
+            try:
+                mesh.ids.add_researcher(orcid, name, verified=True)
+            except ValueError as e:
+                return self._json(400, {"detail": str(e)})
+            sid = mesh.ids.open_session(orcid)
+            self._redirect("/me", {"Set-Cookie": f"hm_session={sid}; Path=/; HttpOnly; SameSite=Lax{'; Secure' if secure else ''}; Max-Age=2592000"})
+
+        # ── POST ──
+        def do_POST(self):  # noqa: N802
+            u = urlparse(self.path)
+            p = u.path.rstrip("/")
+            try:
+                if p.startswith("/q/"):
+                    return self._question_post(p)
+                if not self._same_origin():
+                    return self._json(403, {"detail": "cross-origin request refused"})
+                if p == "/logout":
+                    for part in (self.headers.get("Cookie") or "").split(";"):
+                        k, _, v = part.strip().partition("=")
+                        if k == "hm_session":
+                            mesh.ids.close_session(v)
+                    return self._redirect("/", {"Set-Cookie": "hm_session=; Path=/; Max-Age=0"})
+                who = self._session()
+                if not who:
+                    return self._redirect("/login")
+                if p == "/me/agents":
+                    name = str(self._body().get("name") or "").strip()[:40] or "agent"
+                    agent, token = mesh.ids.mint_agent(who.orcid, name)
+                    flash = (f"Token for <code>{esc(name)}</code> ({esc(agent['id'])}), shown once — copy it now: "
+                             f"<code class=\"token\">{esc(token)}</code>")
+                    return self._html(me_page(mesh, who, flash))
+                if p.startswith("/me/agents/") and p.endswith("/revoke"):
+                    aid = p.split("/")[3]
+                    a = mesh.ids.agent(aid)
+                    if a and a["orcid"] == who.orcid:
+                        mesh.ids.revoke_agent(aid)
+                    return self._redirect("/me?flash=" + urllib.parse.quote(f"agent {aid} revoked"))
+                return self._json(404, {"detail": "no such route"})
+            except Refusal as e:
+                return self._json(e.status, {"detail": e.detail})
+            except GraphError as e:
+                return self._json(422, {"detail": str(e)})
+            except KeyError as e:
+                return self._json(404, {"detail": f"no question {e}"})
+
+        def _question_post(self, p: str) -> None:
+            parts = p.split("/")
+            qid = parts[2] if len(parts) > 2 else ""
+            rest = "/".join(parts[3:])
+            if not mesh.q.get(qid):
+                return self._json(404, {"detail": f"no question {qid!r}"})
+            if not rest.startswith("api/graph"):
+                return self._json(404, {"detail": "no such route"})
+            sub = rest[len("api/graph"):].strip("/")
+            body = self._body()
+            if sub == "write":
+                try:
+                    status, obj = mesh.gate.write(qid, self._bearer(), body)
+                except GraphError as e:
+                    return self._json(422, {"detail": str(e)})
+                return self._json(status, obj)
+            status, obj = dispatch(mesh.q.graph(qid), "POST", "/" + sub, body=body)
+            return self._json(status, obj)
+
+    srv = ThreadingHTTPServer((host, port), H)
+    srv.daemon_threads = True
+    return srv
+
+
+def serve(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> None:
+    srv = make_server(mesh, host, port)
+    print(f"HypMesh on http://{host}:{srv.server_address[1]}/  (data {mesh.data}; {len(mesh.q.list())} question(s)) — Ctrl+C to stop")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+        mesh.close()
+
+
+__all__ = ["Mesh", "make_server", "serve"]
