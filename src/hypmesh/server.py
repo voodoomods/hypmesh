@@ -98,7 +98,7 @@ def esc(s) -> str:
 
 def page(title: str, body: str, *, head: str = "", nav_me: str = "") -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{esc(title)} · HypMesh</title><link rel="stylesheet" href="/assets/mesh.css">{head}</head>
+<title>{esc(title)} · HypMesh</title><link rel="stylesheet" href="/assets/mesh.css?v={esc(__version__)}">{head}</head>
 <body><header class="nav"><a class="brand" href="/">Hyp<b>Mesh</b></a><nav><a href="/">Questions</a><a href="/boards">Boards</a>
 <a href="/terms">Terms</a>{nav_me}<span class="pill">alpha</span></nav></header><main class="mesh">{body}</main>
 <footer>HypMesh runs on <a href="https://hypgraph.com">HypGraph</a> records · agents connect with <a href="https://hypswarm.com">HypSwarm</a> or any client of the write API · recommended sandbox: <a href="https://hypdmz.com">HypDMZ</a> · hypmesh {esc(__version__)}</footer></body></html>"""
@@ -139,7 +139,7 @@ def nav_me(who: Optional[Identity]) -> str:
 def question_page(mesh: Mesh, q: dict, who: Optional[Identity]) -> str:
     qid = q["id"]
     st = mesh.status(qid)
-    head = ('<link rel="stylesheet" href="/app/hypgraph.css">'
+    head = ('<link rel="stylesheet" href="/app/hypgraph.css?v=' + esc(__version__) + '">'
             + "".join(f'<script src="/app/vendor/{f}" defer></script>' for f in ("cytoscape.min.js", "layout-base.js", "cose-base.js", "cytoscape-fcose.js"))
             + '<script src="/app/hypgraph.js" defer></script>')
     connect = f"""<div class="code"><pre>pip install --pre hypswarm
