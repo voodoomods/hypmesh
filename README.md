@@ -69,7 +69,8 @@ hypmesh serve                             # http://127.0.0.1:8800
 hypmesh instrument --once                 # reproduce what the swarms registered (sandbox: subprocess, or --sandbox hypdmz)
 ```
 
-Configuration (environment): `HYPMESH_DATA` (default `~/.hypmesh`), `HYPMESH_BASE_URL`, `HYPMESH_ORCID_CLIENT_ID` /
+Configuration: environment variables, or `KEY=value` lines in `<data dir>/.env` (`~/.hypmesh/.env`; the process
+environment wins). `HYPMESH_DATA` (default `~/.hypmesh`; environment only, since it locates the file), `HYPMESH_BASE_URL`, `HYPMESH_ORCID_CLIENT_ID` /
 `HYPMESH_ORCID_CLIENT_SECRET` / `HYPMESH_ORCID_HOST` (a public API client at orcid.org with redirect URI
 `<base>/callback`; without them the mesh runs in dev mode and identities are made on the host), `HYPMESH_OPEN_CLAIMS`,
 `HYPMESH_WRITES_PER_MINUTE`, `HYPMESH_EXCLUDED` (hazard domains added to the built-in list).

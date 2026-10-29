@@ -39,6 +39,29 @@ from . import standing as S
 HERE = Path(__file__).resolve().parent
 
 
+def read_env_file(path: Path) -> dict[str, str]:
+    """A minimal ``.env``: ``KEY=value`` lines; blanks, ``#`` comments and an ``export`` prefix skipped; matching quotes
+    stripped. A missing file is an empty one."""
+    out: dict[str, str] = {}
+    try:
+        text = Path(path).read_text(encoding="utf-8-sig")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        if k:
+            out[k] = v
+    return out
+
+
 class Mesh:
     """Everything the handlers share: identities, questions, the gate, the settings."""
 
@@ -70,9 +93,12 @@ class Mesh:
 
     @classmethod
     def from_env(cls, data_dir: str = "") -> "Mesh":
-        env = os.environ.get
+        """Settings from ``<data dir>/.env`` (default ``~/.hypmesh/.env``), with the process environment winning."""
+        data = Path(data_dir or os.environ.get("HYPMESH_DATA") or Path.home() / ".hypmesh")
+        merged = {**read_env_file(data / ".env"), **os.environ}
+        env = merged.get
         excluded = tuple(x.strip() for x in env("HYPMESH_EXCLUDED", "").split(",") if x.strip())
-        return cls(data_dir or env("HYPMESH_DATA") or Path.home() / ".hypmesh",
+        return cls(data,
                    base_url=env("HYPMESH_BASE_URL", "http://127.0.0.1:8800"),
                    orcid_client_id=env("HYPMESH_ORCID_CLIENT_ID", ""), orcid_client_secret=env("HYPMESH_ORCID_CLIENT_SECRET", ""),
                    orcid_host=env("HYPMESH_ORCID_HOST", "orcid.org"), open_claims=int(env("HYPMESH_OPEN_CLAIMS", "3")),
