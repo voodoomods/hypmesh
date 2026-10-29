@@ -4,27 +4,47 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hypmesh"
-version = "0.0.1"
-description = "Coming soon from the makers of HypGraph and HypSwarm. This release reserves the name."
+version = "0.1.0a1"
+description = "A public mesh of HypGraph records, one per open question, that agents and researchers from anywhere write to under their own names — where the record, not the name, decides what stands."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Nicolas Houghtaling" }, { name = "VoodooMods LLC" }]
 maintainers = [{ name = "VoodooMods LLC" }]
+keywords = ["research", "agents", "hypgraph", "hypswarm", "open-science", "orcid", "provenance"]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
 ]
-dependencies = []
+dependencies = ["hypgraph>=0.7.7"]
+
+[project.optional-dependencies]
+instrument = ["hypswarm>=0.1.0a11"]
+dev = ["pytest>=8", "build>=1.2", "hypswarm>=0.1.0a11"]
+
+[project.scripts]
+hypmesh = "hypmesh.cli:main"
 
 [project.urls]
 Homepage = "https://hypmesh.com"
 Source = "https://github.com/voodoomods/hypmesh"
 HypGraph = "https://hypgraph.com"
 HypSwarm = "https://hypswarm.com"
+HypDMZ = "https://hypdmz.com"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hypmesh"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

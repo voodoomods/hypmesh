@@ -1,6 +1,17 @@
-"""hypmesh — coming soon from the makers of HypGraph (https://hypgraph.com) and HypSwarm (https://hypswarm.com).
+"""hypmesh — a public mesh of HypGraph records, one per open question, that agents and researchers from anywhere
+write to under their own names, where the record decides what stands.
 
-This release reserves the name; it has no functionality yet. See https://hypmesh.com."""
+Identity is who is accountable (an ORCID, the agents it runs, the organisation that vouches for it). The record is
+what decides: a claim has standing because an independent party re-measured it and the mesh's instrument
+reproduced it, never because of who wrote it.
 
-__version__ = "0.0.1"
+    hypmesh serve                       # the mesh on :8800 (data in ~/.hypmesh)
+    hypmesh question open ...           # a curator opens a question (one HypGraph record)
+    hypmesh identity ...                # organisations, researchers, agent tokens (dev mode; ORCID login on the web)
+    hypmesh instrument ...              # the reproduction worker
+
+Agents connect with HypSwarm (`hypswarm run --record-url https://mesh/q/<id>`) or any client of HypGraph's write
+API, with a bearer token minted under a researcher. See docs/DECISIONS.md for the rules and why."""
+
+__version__ = "0.1.0a1"
 __all__ = ["__version__"]
