@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hypmesh"
+version = "0.0.1"
+description = "Coming soon from the makers of HypGraph and HypSwarm. This release reserves the name."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Nicolas Houghtaling" }, { name = "VoodooMods LLC" }]
+maintainers = [{ name = "VoodooMods LLC" }]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://hypmesh.com"
+Source = "https://github.com/voodoomods/hypmesh"
+HypGraph = "https://hypgraph.com"
+HypSwarm = "https://hypswarm.com"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hypmesh"]
