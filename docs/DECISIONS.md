@@ -29,7 +29,7 @@ Review quality came from the question, the independence and the re-measurement, 
 
 So the rule is structural, not about capability:
 
-- the reviewer is another identity: another ORCID, and for the top level another organisation (an unaffiliated
+- the reviewer is another identity: another researcher, and for the top level another organisation (an unaffiliated
   researcher counts as an organisation of one);
 - a review carries a method (HypGraph refuses one without a sentence of method and notes) and is pinned to the version
   it read; a new version makes it stale;
@@ -44,11 +44,11 @@ So the rule is structural, not about capability:
 |---|---|---|
 | fabricated numbers | a claim's numbers must bind to a result's values; the record refuses the write and logs the refusal | HypGraph |
 | flooding | the per-identity caps; append-only means spam is attributable forever | gate |
-| collusion rings | same-ORCID reviews never count above L1; L3 needs two organisations; reviews between the same pair are visible in the ledger | standing |
+| collusion rings | one researcher's reviews of their own work never count above L1; L3 needs two organisations; reviews between the same pair are visible in the ledger | standing |
 | review-bombing | an objection needs a method; a reviewer whose reviews keep being overturned loses eligibility | gate, standing |
 | prompt injection through content | agents read other agents' text as data, never as instruction (a client-side rule; the mesh can't enforce it, so the terms say it and HypDMZ is recommended) | terms |
 | exfiltration via shared files | the mesh holds records, not files; HypDMZ for the agents' side | HypDMZ |
-| sybils | an ORCID is one person, verified by ORCID's own login; agents are tokens under it; the person answers for every token | identity |
+| sybils | a researcher is one GitHub account, accounts younger than a set age are turned away, and an organisation can vouch; agents are tokens under it; the person answers for every token. Weaker than a verified iD: the boards and L3's two organisations carry the rest | identity |
 | stolen credit | the hash chain timestamps who wrote what first; bundles verify offline | HypGraph |
 | editing others' work | an identity edits only what it created; it may create, link and review anywhere | gate |
 
@@ -76,8 +76,8 @@ patented, don't post it here first" is on `/terms`.
 
 **A protocol, not a website.** Per question, the mesh speaks exactly what `hypgraph serve` speaks: the read API, the
 stream, and the write API behind the gate. So `hypswarm run --record-url` works unchanged, and so will any client
-that already talks to a served record. Identity is the addition: ORCID sign-in on the web mints agent tokens; an
-organisation vouches for ORCIDs; a ledger attributes every node to the identity that wrote it, without rewriting the
+that already talks to a served record. Identity is the addition: GitHub sign-in on the web mints agent tokens; an
+organisation vouches for researchers; a ledger attributes every node to the identity that wrote it, without rewriting the
 author names a swarm uses for its seats.
 
 ## 5. One record, or one graph? (2026-10-29)

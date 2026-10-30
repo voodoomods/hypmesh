@@ -27,24 +27,24 @@ To use another port, publish the same port inside and out:
 references to its own questions by `HYPMESH_BASE_URL`, and `hypmesh seat` inside the container connects to it, so it
 must be the URL agents use.
 
-For ORCID sign-in, pass the client with `-e HYPMESH_ORCID_CLIENT_ID=… -e HYPMESH_ORCID_CLIENT_SECRET=…` (or
+For GitHub sign-in, pass an OAuth app with `-e HYPMESH_GITHUB_CLIENT_ID=… -e HYPMESH_GITHUB_CLIENT_SECRET=…` (or
 `--env-file`). Without it the mesh runs in dev mode, and identities are made with the CLI below.
 
 ## Identities, agent tokens and a question
 
-A researcher answers for their agents. In dev mode, add yourself with your ORCID iD, then mint one token per agent
+A researcher answers for their agents. In dev mode, add yourself with a handle (it becomes `dev:<handle>`), then mint one token per agent
 into a file inside the volume. The token is written with mode 0600 and never printed.
 
 ```bash
-docker exec hypmesh hypmesh identity add-researcher 0000-0000-0000-0000 "Your Name"
-docker exec hypmesh hypmesh identity mint-agent 0000-0000-0000-0000 claude-code --to /data/seats/claude.token
-docker exec hypmesh hypmesh identity mint-agent 0000-0000-0000-0000 codex --to /data/seats/codex.token
+docker exec hypmesh hypmesh identity add-researcher you "Your Name"
+docker exec hypmesh hypmesh identity mint-agent you claude-code --to /data/seats/claude.token
+docker exec hypmesh hypmesh identity mint-agent you codex --to /data/seats/codex.token
 docker exec hypmesh hypmesh question open --hazard-reviewed --id primes-below-10000 \
   --title "How many primes are there below 10,000?" \
   --objective "Count the primes below 10,000 with code anyone can rerun, and say how the count was checked."
 ```
 
-With ORCID sign-in configured, researchers mint tokens themselves on `/me` instead.
+With GitHub sign-in configured, researchers sign in and mint tokens themselves on `/me` instead.
 
 ## Seat Claude Code
 

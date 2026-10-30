@@ -16,7 +16,7 @@ from hypmesh import server as srvmod
 from hypmesh.backup import snapshot
 from hypmesh.server import Mesh, _is_trusted, make_server
 
-ADA = "0000-0002-1825-0097"
+ADA = "dev:ada"
 
 
 def start(m: Mesh):
@@ -110,9 +110,8 @@ def test_event_streams_are_capped(tmp_path):
         m.close()
 
 
-def test_sign_in_clears_the_state_cookie(tmp_path, monkeypatch):
-    m = Mesh(tmp_path, base_url="https://mesh.example.org", orcid_client_id="APP-TEST", orcid_client_secret="x")
-
+def _github(monkeypatch, user: dict):
+    """Stand in for GitHub: the token exchange, then the profile. Returns the URLs asked for."""
     class Answer(io.BytesIO):
         def __enter__(self):
             return self
@@ -120,20 +119,62 @@ def test_sign_in_clears_the_state_cookie(tmp_path, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(srvmod.urllib.request, "urlopen",
-                        lambda req, timeout=0: Answer(json.dumps({"orcid": ADA, "name": "Ada"}).encode()))
+    seen = []
+
+    def urlopen(req, timeout=0):
+        seen.append(req.full_url)
+        if req.full_url.startswith("https://github.com/login/oauth/access_token"):
+            return Answer(json.dumps({"access_token": "gho_test", "token_type": "bearer"}).encode())
+        assert req.full_url == "https://api.github.com/user" and req.get_header("Authorization") == "Bearer gho_test"
+        return Answer(json.dumps(user).encode())
+    monkeypatch.setattr(srvmod.urllib.request, "urlopen", urlopen)
+    return seen
+
+
+def test_github_sign_in_makes_a_verified_researcher_and_clears_the_state_cookie(tmp_path, monkeypatch):
+    m = Mesh(tmp_path, base_url="https://mesh.example.org", github_client_id="Iv1.test", github_client_secret="x")
+    seen = _github(monkeypatch, {"id": 583231, "login": "octocat", "name": "The Octocat", "created_at": "2011-01-25T18:44:36Z"})
     srv, port = start(m)
     try:
+        st, headers, _ = request(port, "GET", "/login")
+        assert st == 303 and dict(headers)["Location"].startswith("https://github.com/login/oauth/authorize?client_id=Iv1.test")
         st, headers, _ = request(port, "GET", "/callback?code=c&state=s1", {"Cookie": "hm_state=s1"})
         cookies = [v for k, v in headers if k.lower() == "set-cookie"]
-        assert st == 303
+        assert st == 303 and dict(headers)["Location"] == "/me"
         assert any(c.startswith("hm_session=") and "Secure" in c for c in cookies)
         assert any(c.startswith("hm_state=;") and "Max-Age=0" in c for c in cookies)
-        assert m.ids.researcher(ADA)["verified"] == 1
+        r = m.ids.researcher("github:583231")
+        assert r["verified"] == 1 and r["handle"] == "octocat" and r["name"] == "The Octocat" and r["provider"] == "github"
+        assert len(seen) == 2
+        sid = [c for c in cookies if c.startswith("hm_session=")][0].split(";")[0].split("=", 1)[1]
+        st, _, body = request(port, "GET", "/me", {"Cookie": f"hm_session={sid}"})
+        assert st == 200 and b'href="https://github.com/octocat">@octocat' in body and b"signed in with GitHub" in body
     finally:
         srv.shutdown()
         m.close()
 
+
+def test_a_new_github_account_is_turned_away(tmp_path, monkeypatch):
+    import time as _t
+    m = Mesh(tmp_path, base_url="https://mesh.example.org", github_client_id="Iv1.test", github_client_secret="x", github_min_age_days=30)
+    _github(monkeypatch, {"id": 99, "login": "fresh", "created_at": _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(_t.time() - 3 * 86400))})
+    srv, port = start(m)
+    try:
+        st, _, body = request(port, "GET", "/callback?code=c&state=s1", {"Cookie": "hm_state=s1"})
+        assert st == 403 and b"at least 30 days old" in body and m.ids.researcher("github:99") is None
+    finally:
+        srv.shutdown()
+        m.close()
+
+
+def test_an_old_data_dir_is_refused_plainly(tmp_path):
+    import sqlite3
+    con = sqlite3.connect(str(tmp_path / "mesh.db"))
+    con.execute("CREATE TABLE researchers (person TEXT PRIMARY KEY, name TEXT NOT NULL)")     # no researcher ids
+    con.commit()
+    con.close()
+    with pytest.raises(RuntimeError, match="older than 0.1.0a5"):
+        Mesh(tmp_path)
 
 def test_backup_is_consistent_verified_and_pruned(tmp_path):
     data, dest = tmp_path / "data", tmp_path / "backups"

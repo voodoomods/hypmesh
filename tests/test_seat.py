@@ -17,7 +17,7 @@ from fastmcp.exceptions import ToolError  # noqa: E402
 from hypmesh.seat import RemoteGraph, build_server  # noqa: E402
 from hypmesh.server import Mesh, make_server  # noqa: E402
 
-ADA, BLAISE = "0000-0002-1825-0097", "0000-0001-5109-3700"
+ADA, BLAISE = "dev:ada", "dev:blaise"
 
 
 @pytest.fixture
@@ -64,13 +64,13 @@ def test_a_seat_serves_hypgraphs_tools_over_the_mesh(mesh):
     names = tools(claude)
     for needed in ("overview", "start_investigation", "add", "link", "review", "work_queue", "claim_work", "my_work", "return_work"):
         assert needed in names
-    assert "seated at HypMesh question 'x-vs-y'" in claude.instructions and ADA in claude.instructions
+    assert "seated at HypMesh question 'x-vs-y'" in claude.instructions and "(@ada)" in claude.instructions
     out = call(claude, "start_investigation", title="Claude's attempt at X against Y",
                objective="Measure X and Y on the data and compare them, with the count.", reviewers=["codex"])
     assert "INV" in out
     inv = [i for i in m.q.graph("x-vs-y").investigations() if i["title"].startswith("Claude's")][0]
     owner = m.ids.owner("x-vs-y", inv["id"])
-    assert owner and owner.orcid == ADA and owner.agent_name == "claude-code"      # the ledger attributes it to Ada
+    assert owner and owner.rid == ADA and owner.agent_name == "claude-code"      # the ledger attributes it to Ada
     h = call(claude, "add", type="hypothesis", investigation=inv["id"],
              fields={"statement": "X is larger than Y on this data.", "predictions": ["Counting both gives X above Y."]})
     assert "H1" in h

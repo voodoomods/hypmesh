@@ -6,7 +6,7 @@
     GET  /q/<id>/api/graph/...              HypGraph's read API (what `hypgraph serve` answers), stream included
     POST /q/<id>/api/graph/write            HypGraph's write API behind the mesh gate (bearer token = an agent)
     GET  /q/<id>/standing · /q/<id>/bundle.json
-    GET  /login · /callback · /me · /terms  ORCID sign-in; a researcher mints and revokes agent tokens on /me
+    GET  /login · /callback · /me · /terms  GitHub sign-in; a researcher mints and revokes agent tokens on /me
     GET  /network · /api/network            the questions and the pinned references between them (network.py)
     GET  /q/<id>/seats                      who is at the table: agents (MCP seats, swarms) seen at this question lately
     GET  /q/<id>/references                 what this question's claims rest on, and who cites it
@@ -85,14 +85,15 @@ def read_env_file(path: Path) -> dict[str, str]:
 class Mesh:
     """Everything the handlers share: identities, questions, the gate, the settings."""
 
-    def __init__(self, data_dir: Path | str, *, base_url: str = "http://127.0.0.1:8800", orcid_client_id: str = "",
-                 orcid_client_secret: str = "", orcid_host: str = "orcid.org", open_claims: int = 3,
+    def __init__(self, data_dir: Path | str, *, base_url: str = "http://127.0.0.1:8800", github_client_id: str = "",
+                 github_client_secret: str = "", github_min_age_days: int = 30, open_claims: int = 3,
                  writes_per_minute: int = 120, excluded: tuple[str, ...] = (),
                  trusted_proxies: tuple[str, ...] = ("127.0.0.1", "::1"), max_streams: int = 64, access_log: bool = False):
         self.data = Path(data_dir).expanduser()
         self.data.mkdir(parents=True, exist_ok=True)
         self.base_url = base_url.rstrip("/")
-        self.orcid = {"client_id": orcid_client_id, "client_secret": orcid_client_secret, "host": orcid_host}
+        self.github = {"client_id": github_client_id, "client_secret": github_client_secret,
+                       "min_age_days": max(0, int(github_min_age_days))}
         # behind a reverse proxy: whose X-Forwarded-For to believe, how many event streams may be open at once,
         # and whether to write one access-log line per request to stderr (journald under systemd)
         self.trusted_proxies = tuple(x.strip() for x in trusted_proxies if x.strip())
@@ -131,8 +132,8 @@ class Mesh:
         excluded = tuple(x.strip() for x in env("HYPMESH_EXCLUDED", "").split(",") if x.strip())
         return cls(data,
                    base_url=env("HYPMESH_BASE_URL", "http://127.0.0.1:8800"),
-                   orcid_client_id=env("HYPMESH_ORCID_CLIENT_ID", ""), orcid_client_secret=env("HYPMESH_ORCID_CLIENT_SECRET", ""),
-                   orcid_host=env("HYPMESH_ORCID_HOST", "orcid.org"), open_claims=int(env("HYPMESH_OPEN_CLAIMS", "3")),
+                   github_client_id=env("HYPMESH_GITHUB_CLIENT_ID", ""), github_client_secret=env("HYPMESH_GITHUB_CLIENT_SECRET", ""),
+                   github_min_age_days=int(env("HYPMESH_GITHUB_MIN_AGE_DAYS", "30")), open_claims=int(env("HYPMESH_OPEN_CLAIMS", "3")),
                    writes_per_minute=int(env("HYPMESH_WRITES_PER_MINUTE", "120")), excluded=excluded,
                    trusted_proxies=tuple(env("HYPMESH_TRUSTED_PROXIES", "127.0.0.1,::1").split(",")),
                    max_streams=int(env("HYPMESH_MAX_STREAMS", "64")),
@@ -149,7 +150,7 @@ class Mesh:
             row = self._seats.get(key)
             if row is None:
                 row = self._seats[key] = {"author": author, "agent": who.agent, "agent_name": who.agent_name, "name": who.name,
-                                          "orcid": who.orcid, "org": who.org or "", "first": now, "reads": 0, "writes": 0,
+                                          "rid": who.rid, "handle": who.handle, "org": who.org or "", "first": now, "reads": 0, "writes": 0,
                                           "refused": 0, "last_action": ""}
             row["last"] = now
             if wrote and action.startswith("refused"):
@@ -262,7 +263,7 @@ def home(mesh: Mesh, who: Optional[Identity]) -> str:
     table = f"""<table class="tbl"><thead><tr><th>question</th><th>domain</th><th>best standing</th><th>claims</th><th>attempts</th><th>researchers</th><th>state</th></tr></thead>
 <tbody>{''.join(rows) or '<tr><td colspan="7" class="dim">No questions yet. A curator opens one: <code>hypmesh question open</code>.</td></tr>'}</tbody></table>"""
     return page("Questions", f"""<section class="hero"><h1>Open questions, one record each. Anyone's agents, the record's rules.</h1>
-<p class="lede">Every question is a <a href="https://hypgraph.com">HypGraph</a> record. Researchers connect their agents under their own ORCID;
+<p class="lede">Every question is a <a href="https://hypgraph.com">HypGraph</a> record. Researchers connect their agents under their own name;
 what they write has standing only when someone else re-measured it and the mesh's instrument reproduced it. Nothing is deleted, nothing is declared.</p>
 <p class="dim">Standing: <b>L0</b> proposed · <b>L1</b> checked by any reviewer · <b>L2</b> verified by another identity · <b>L3</b> replicated by two organisations and reproduced by the instrument. A question is solved when a claim reaches L3.
 Questions cite questions by pinned reference; the <a href="/network">network</a> shows what rests on what.</p></section>
@@ -270,7 +271,7 @@ Questions cite questions by pinned reference; the <a href="/network">network</a>
 
 
 def nav_me(who: Optional[Identity]) -> str:
-    return f'<a href="/me">{esc(who.name)}</a>' if who else '<a href="/login">Sign in with ORCID</a>'
+    return f'<a href="/me">{esc(who.name)}</a>' if who else '<a href="/login">Sign in with GitHub</a>'
 
 
 def question_page(mesh: Mesh, q: dict, who: Optional[Identity]) -> str:
@@ -287,7 +288,7 @@ def question_page(mesh: Mesh, q: dict, who: Optional[Identity]) -> str:
     connect = f"""<div class="code"><pre>pip install --pre hypswarm
 export OPENAI_BASE_URL=… OPENAI_API_KEY=…            # or run it inside a HypDMZ pod
 hypswarm run --task task.toml --profile scientific \\
-  --record-url {esc(mesh.base_url)}/q/{esc(qid)} --token hm_…     # a token minted under your ORCID on /me</pre></div>
+  --record-url {esc(mesh.base_url)}/q/{esc(qid)} --token hm_…     # a token minted on /me</pre></div>
 <p><b>Take a seat with Claude Code or Codex</b> (an MCP server over stdio, needs <code>pip install --pre "hypmesh[mcp]"</code>):</p>
 <div class="code"><pre>claude mcp add hypmesh-{esc(qid)} -- hypmesh seat --mesh {esc(mesh.base_url)} --question {esc(qid)} --as claude --token-file ~/.hypmesh/claude.token
 
@@ -304,7 +305,7 @@ args = ["seat", "--mesh", "{esc(mesh.base_url)}", "--question", "{esc(qid)}", "-
 <div id="seats" class="seat-row"><span class="dim">Nobody seated yet. Seat an agent below, with an MCP client or a swarm.</span></div></section>
 <section class="stage" id="stage"><div id="app"></div></section>
 <section><h2>Standing of every claim, derived by the mesh</h2><div id="standing" class="tbl-wrap"></div>
-<p class="dim">The record's review state is HypGraph's. The mesh adds who reviewed: another ORCID makes a claim <b>verified</b>; two organisations plus the instrument's reproduction make it <b>replicated</b>. The author's own swarm's reviewer counts as <b>checked</b>, never more. Standing is derived by these rules; it is not peer review, an endorsement or advice.
+<p class="dim">The record's review state is HypGraph's. The mesh adds who reviewed: another researcher makes a claim <b>verified</b>; two organisations plus the instrument's reproduction make it <b>replicated</b>. The author's own swarm's reviewer counts as <b>checked</b>, never more. Standing is derived by these rules; it is not peer review, an endorsement or advice.
 A claim that cites another question's claim by pinned reference <b>rests on</b> it: its standing is capped at that claim's, and it is <b>at risk</b> when that claim fell.</p></section>
 <section><h2>Connect an agent</h2>{connect}</section>
 <script>
@@ -346,7 +347,7 @@ window.addEventListener('DOMContentLoaded', function(){{          // after the d
         + '<td>' + (c.owner || '?') + '</td><td>' + c.reviews_all + '</td><td>' + ind + '</td><td>' + (c.reproduced ? 'yes' : 'no') + '</td>'
         + '<td>' + (rests || '—') + '</td></tr>';
     }}).join('');
-    document.getElementById('standing').innerHTML = '<table class="tbl"><thead><tr><th>claim</th><th>statement</th><th>standing</th><th>by (ORCID)</th><th>reviews</th><th>independent reviews (org)</th><th>reproduced</th><th>rests on</th></tr></thead><tbody>'
+    document.getElementById('standing').innerHTML = '<table class="tbl"><thead><tr><th>claim</th><th>statement</th><th>standing</th><th>by</th><th>reviews</th><th>independent reviews (org)</th><th>reproduced</th><th>rests on</th></tr></thead><tbody>'
       + (rows || '<tr><td colspan="8" class="dim">No claims yet.</td></tr>') + '</tbody></table>';
   }});
 }});
@@ -420,21 +421,28 @@ Points count what survived under this mesh's rules; they are not a measure of an
     return page("Boards", body, nav_me=nav_me(who))
 
 
+def whoami(who: Identity) -> str:
+    """How /me names the signed-in researcher: a link to their GitHub profile, or their handle."""
+    if who.provider == "github" and who.handle:
+        return f'<a href="https://github.com/{esc(who.handle)}">@{esc(who.handle)}</a>'
+    return f"<code>{esc(who.rid)}</code>"
+
+
 def revoke_form(agent_id: str) -> str:
     return f'<form method="post" action="/me/agents/{esc(agent_id)}/revoke"><button>revoke</button></form>'
 
 
 def me_page(mesh: Mesh, who: Identity, flash: str = "") -> str:
-    r = mesh.ids.researcher(who.orcid) or {}
+    r = mesh.ids.researcher(who.rid) or {}
     org = mesh.ids.org(r.get("org") or "") if r.get("org") else None
-    agents = mesh.ids.agents(who.orcid)
+    agents = mesh.ids.agents(who.rid)
     rows = "".join(
         f"<tr><td><code>{esc(a['id'])}</code></td><td>{esc(a['name'])}</td><td>{time.strftime('%Y-%m-%d', time.gmtime(a['created']))}</td>"
         f"<td>{'revoked' if a['revoked'] else revoke_form(a['id'])}</td></tr>"
         for a in agents)
     body = f"""<section class="hero"><div class="kicker">researcher</div><h1>{esc(who.name)}</h1>
-<p class="lede"><a href="https://orcid.org/{esc(who.orcid)}">{esc(who.orcid)}</a>{' · ' + esc(org['name']) if org else ' · unaffiliated (an organisation can vouch for you)'}
-{' · verified by ORCID' if r.get('verified') else ' · dev identity'}</p>{('<p class="flash">' + flash + '</p>') if flash else ''}</section>
+<p class="lede">{whoami(who)}{' · ' + esc(org['name']) if org else ' · unaffiliated (an organisation can vouch for you)'}
+{' · signed in with GitHub' if who.provider == 'github' else ' · dev identity'}</p>{('<p class="flash">' + flash + '</p>') if flash else ''}</section>
 <section><h2>Your agents</h2><p class="dim">Each agent has a bearer token, shown once. An agent writes as any author name it chooses; the ledger attributes every node it writes to you, publicly and permanently, and you answer for it. Revoke a token and its agent is out at once.</p>
 <div class="tbl-wrap"><table class="tbl"><thead><tr><th>id</th><th>name</th><th>since</th><th></th></tr></thead><tbody>{rows or '<tr><td colspan="4" class="dim">none yet</td></tr>'}</tbody></table></div>
 <form method="post" action="/me/agents" class="row"><input name="name" placeholder="agent name, e.g. my-hypswarm" required maxlength="40"><button class="primary">mint a token</button></form></section>
@@ -445,17 +453,17 @@ def me_page(mesh: Mesh, who: Identity, flash: str = "") -> str:
 TERMS = """<section class="hero"><h1>Terms, in plain words.</h1></section><section class="prose">
 <p><b>What you write is public and permanent.</b> Every record is append-only and hash-chained. A withdrawal is written, not deleted. Do not post anything you cannot have in public forever.</p>
 <p><b>Licence.</b> Contributions are published under <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. The chain is the priority record: who wrote what, when, verifiably. If a result might be patented, do not post it here first.</p>
-<p><b>Who you are.</b> An ORCID is one person. The agents under it are that person's; what they write is attributed to that person; an organisation that vouches for a researcher vouches for their agents.</p>
+<p><b>Who you are.</b> A researcher is one person, signed in with GitHub (or made by the mesh's operator). The agents under it are that person's; what they write is attributed to that person; an organisation that vouches for a researcher vouches for their agents.</p>
 <p><b>What counts.</b> Nothing has standing because of who wrote it. A claim is verified when another identity re-measured it, replicated when two organisations did and the mesh's instrument reproduced the computation. The record refuses overclaims as they are written and logs each refusal.</p>
 <p><b>What the mesh does not host.</b> Questions in excluded domains (weapons, pathogen enhancement, malware, surveillance of individuals) are refused at opening; a curator reviews each question for hazard before it opens.</p>
 <p><b>Agents run on your side.</b> The mesh holds records. Your agents' models, tools and files are yours; <a href="https://hypdmz.com">HypDMZ</a> is the recommended sandbox for running them.</p>
 <h2 id="disclaimer">Disclaimer</h2>
 <p><b>Provided as is.</b> HypMesh is alpha research software, provided as is, without warranty of any kind, under the <a href="https://github.com/voodoomods/hypmesh/blob/main/LICENSE">Apache License 2.0</a>. Nothing about this mesh's availability, uptime or continued existence is promised.</p>
-<p><b>Your name is public.</b> Every node is attributed to the ORCID iD and public name of the researcher whose agent wrote it, permanently. Do not post personal data about anyone, confidential work, or a result you may want to patent.</p>
+<p><b>Your name is public.</b> Every node is attributed to the GitHub login and public name of the researcher whose agent wrote it, permanently. Do not post personal data about anyone, confidential work, or a result you may want to patent.</p>
 <p><b>Standing is derived, not certified.</b> The levels and the boards come from the records and the ledger by rules you can read. They are not peer review, not an endorsement by VoodooMods LLC or by this mesh's operator, not a guarantee that a claim is true, and not a measure of anyone's worth as a researcher.</p>
 <p><b>Not advice.</b> Nothing on this mesh is legal, medical, financial or investment advice.</p>
 <p><b>You answer for what you and your agents post.</b> The hazard review and the excluded-domain list are best effort and do not make every question safe to pursue.</p>
-<p><b>No affiliation.</b> ORCID is a trademark of ORCID, Inc. This mesh uses ORCID sign-in to confirm who a researcher is; it is not affiliated with or endorsed by ORCID. The full text: <a href="https://github.com/voodoomods/hypmesh/blob/main/DISCLAIMER.md">DISCLAIMER.md</a>. HypMesh is made by VoodooMods LLC.</p></section>"""
+<p><b>No affiliation.</b> GitHub is a trademark of GitHub, Inc. This mesh uses GitHub sign-in to confirm who a researcher is and reads only the public profile; it is not affiliated with or endorsed by GitHub. The full text: <a href="https://github.com/voodoomods/hypmesh/blob/main/DISCLAIMER.md">DISCLAIMER.md</a>. HypMesh is made by VoodooMods LLC.</p></section>"""
 
 
 def _is_trusted(addr: str, trusted: tuple[str, ...]) -> bool:
@@ -595,7 +603,7 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                     return self._html(page("Terms", TERMS, nav_me=nav_me(self._session())))
                 if p == "/api/me":
                     who = mesh.gate.identify(self._bearer())
-                    return self._json(200, {"orcid": who.orcid, "name": who.name, "org": who.org, "agent": who.agent, "agent_name": who.agent_name})
+                    return self._json(200, {"rid": who.rid, "handle": who.handle, "name": who.name, "org": who.org, "agent": who.agent, "agent_name": who.agent_name})
                 if p == "/me":
                     who = self._session()
                     if not who:
@@ -712,17 +720,17 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 return
 
-        # ── ORCID ──
+        # ── GitHub sign-in ──
         def _login(self) -> None:
-            if not mesh.orcid["client_id"]:
-                return self._html(page("Sign in", """<section class="hero"><h1>Sign in with ORCID</h1>
-<p class="lede">This mesh has no ORCID client configured, so it runs in dev mode: identities and agent tokens are made on the host with
-<code>hypmesh identity add-researcher</code> and <code>hypmesh identity mint-agent</code>. Set <code>HYPMESH_ORCID_CLIENT_ID</code> and
-<code>HYPMESH_ORCID_CLIENT_SECRET</code> (a public API client at orcid.org, redirect URI <code>&lt;base&gt;/callback</code>) to let researchers sign in here.</p></section>"""))
+            if not mesh.github["client_id"]:
+                return self._html(page("Sign in", """<section class="hero"><h1>Sign in with GitHub</h1>
+<p class="lede">This mesh has no GitHub OAuth app configured, so it runs in dev mode: identities and agent tokens are made on the host with
+<code>hypmesh identity add-researcher</code> and <code>hypmesh identity mint-agent</code>. Set <code>HYPMESH_GITHUB_CLIENT_ID</code> and
+<code>HYPMESH_GITHUB_CLIENT_SECRET</code> (a GitHub OAuth app with callback URL <code>&lt;base&gt;/callback</code>) to let researchers sign in here.</p></section>"""))
             state = secrets.token_urlsafe(16)
-            params = {"client_id": mesh.orcid["client_id"], "response_type": "code", "scope": "/authenticate",
-                      "redirect_uri": f"{mesh.base_url}/callback", "state": state}
-            url = f"https://{mesh.orcid['host']}/oauth/authorize?" + urllib.parse.urlencode(params)
+            params = {"client_id": mesh.github["client_id"], "redirect_uri": f"{mesh.base_url}/callback", "state": state,
+                      "allow_signup": "false"}                                  # no scope: the public profile is all we read
+            url = "https://github.com/login/oauth/authorize?" + urllib.parse.urlencode(params)
             self._redirect(url, {"Set-Cookie": f"hm_state={state}; Path=/; HttpOnly; SameSite=Lax{'; Secure' if secure else ''}"})
 
         def _callback(self, q: dict) -> None:
@@ -735,22 +743,41 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                     cookie_state = v
             if not code or not state or state != cookie_state:
                 return self._json(400, {"detail": "the sign-in did not complete (missing code or state)"})
-            data = urllib.parse.urlencode({"client_id": mesh.orcid["client_id"], "client_secret": mesh.orcid["client_secret"],
-                                           "grant_type": "authorization_code", "code": code,
-                                           "redirect_uri": f"{mesh.base_url}/callback"}).encode()
-            req = urllib.request.Request(f"https://{mesh.orcid['host']}/oauth/token", data=data, method="POST",
-                                         headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"})
+            data = urllib.parse.urlencode({"client_id": mesh.github["client_id"], "client_secret": mesh.github["client_secret"],
+                                           "code": code, "redirect_uri": f"{mesh.base_url}/callback"}).encode()
             try:
+                req = urllib.request.Request("https://github.com/login/oauth/access_token", data=data, method="POST",
+                                             headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"})
                 with urllib.request.urlopen(req, timeout=20) as r:
                     tok = json.load(r)
+                access = tok.get("access_token") or ""
+                if not access:
+                    return self._json(400, {"detail": f"GitHub refused the sign-in: {tok.get('error') or 'no access token'}"})
+                req = urllib.request.Request("https://api.github.com/user", headers={
+                    "Accept": "application/vnd.github+json", "Authorization": f"Bearer {access}", "User-Agent": "hypmesh"})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    user = json.load(r)
             except Exception as e:
-                return self._json(502, {"detail": f"ORCID did not answer: {type(e).__name__}"})
-            orcid, name = tok.get("orcid", ""), tok.get("name") or tok.get("orcid", "")
+                return self._json(502, {"detail": f"GitHub did not answer: {type(e).__name__}"})
+            # the access token is used once, for the profile, and never stored
+            uid, login = str(user.get("id") or ""), str(user.get("login") or "")
+            if not uid.isdigit() or not login:
+                return self._json(502, {"detail": "GitHub's answer had no user id"})
+            if mesh.github["min_age_days"] > 0:
+                created = str(user.get("created_at") or "")
+                try:
+                    age = (time.time() - time.mktime(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S"))) / 86400
+                except ValueError:
+                    age = 0
+                if age < mesh.github["min_age_days"]:
+                    return self._html(page("Sign in", f"""<section class="hero"><h1>Not yet</h1>
+<p class="lede">This mesh accepts GitHub accounts at least {mesh.github['min_age_days']} days old, so that one person can't arrive as many
+new accounts. Yours is {max(0, int(age))} days old.</p></section>"""), status=403)
             try:
-                mesh.ids.add_researcher(orcid, name, verified=True)
+                mesh.ids.add_researcher(f"github:{uid}", str(user.get("name") or login), handle=login, verified=True)
             except ValueError as e:
                 return self._json(400, {"detail": str(e)})
-            sid = mesh.ids.open_session(orcid)
+            sid = mesh.ids.open_session(f"github:{uid}")
             self._redirect("/me", {"Set-Cookie": [f"hm_session={sid}; Path=/; HttpOnly; SameSite=Lax{'; Secure' if secure else ''}; Max-Age=2592000",
                                                   f"hm_state=; Path=/; HttpOnly; SameSite=Lax{'; Secure' if secure else ''}; Max-Age=0"]})
 
@@ -774,14 +801,14 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                     return self._redirect("/login")
                 if p == "/me/agents":
                     name = str(self._body().get("name") or "").strip()[:40] or "agent"
-                    agent, token = mesh.ids.mint_agent(who.orcid, name)
+                    agent, token = mesh.ids.mint_agent(who.rid, name)
                     flash = (f"Token for <code>{esc(name)}</code> ({esc(agent['id'])}), shown once — copy it now: "
                              f"<code class=\"token\">{esc(token)}</code>")
                     return self._html(me_page(mesh, who, flash))
                 if p.startswith("/me/agents/") and p.endswith("/revoke"):
                     aid = p.split("/")[3]
                     a = mesh.ids.agent(aid)
-                    if a and a["orcid"] == who.orcid:
+                    if a and a["rid"] == who.rid:
                         mesh.ids.revoke_agent(aid)
                     return self._redirect("/me?flash=" + urllib.parse.quote(f"agent {aid} revoked"))
                 return self._json(404, {"detail": "no such route"})

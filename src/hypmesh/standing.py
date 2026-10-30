@@ -6,11 +6,11 @@ A claim's mesh standing, from the record's own derived review state plus who the
     contested   an independent reviewer objected and the objection stands
     L0          proposed: active, no official positive review
     L1          checked: an official positive review — possibly by the author's own swarm's reviewer seat
-    L2          verified: a positive review by someone else (another ORCID), none against
+    L2          verified: a positive review by someone else (another researcher), none against
     L3          replicated: L2, positive reviews from two different organisations, and the mesh's instrument
                 reproduced the computation the claim rests on
 
-"Independent" means another ORCID; "another organisation" means another org, or another unaffiliated person.
+"Independent" means another researcher; "another organisation" means another org, or another unaffiliated person.
 A question is solved when a claim in it reaches L3. The boards count what survived, not what was written.
 
 Across questions (network.py): a claim that cites a pinned reference to a claim of another question of this mesh
@@ -42,10 +42,10 @@ class ClaimStanding:
     inv: str
     statement: str
     level: str
-    owner: Optional[str]               # ORCID
+    owner: Optional[str]               # researcher id
     owner_org: str
     reviews_all: int                   # official positive reviews, any identity
-    independent: list[dict]            # [{orcid, org, verdict, review}]
+    independent: list[dict]            # [{rid, org, verdict, review}]
     orgs: list[str]                    # distinct org keys among independent positives
     reproduced: bool
     record_review: str                 # hypgraph's own review state for the current version
@@ -147,8 +147,8 @@ def claims(g: Graph, ids: Identities, qid: str, *, questions=None, refs=None, _m
         independent = []
         for r in reviews:
             who = ids.owner(qid, r["review"])
-            if who and owner and who.orcid != owner.orcid:
-                independent.append({"orcid": who.orcid, "org": who.org_key, "verdict": r["verdict"], "review": r["review"]})
+            if who and owner and who.rid != owner.rid:
+                independent.append({"rid": who.rid, "handle": who.handle, "org": who.org_key, "verdict": r["verdict"], "review": r["review"]})
         pos = [r for r in independent if r["verdict"] in POSITIVE]
         neg = [r for r in independent if r["verdict"] in NEGATIVE]
         orgs = sorted({r["org"] for r in pos})
@@ -177,7 +177,7 @@ def claims(g: Graph, ids: Identities, qid: str, *, questions=None, refs=None, _m
                 if r["level"] in _L and level in _L and _L[r["level"]] < _L[level]:
                     level, capped_by = r["level"], f"{r['question']}/{r['code'] or r['node']}"
         out.append(ClaimStanding(nid, n.get("code", ""), n.get("inv", ""), (n.get("body") or {}).get("statement", ""), level,
-                                 owner.orcid if owner else None, owner.org_key if owner else "",
+                                 owner.rid if owner else None, owner.org_key if owner else "",
                                  sum(1 for r in reviews if r["verdict"] in POSITIVE), independent, orgs, reproduced, rr,
                                  rests, own, capped_by))
     order = {lv: i for i, lv in enumerate(reversed(LEVELS))}
@@ -226,10 +226,10 @@ class Score:
                 "questions": len(self.questions)}
 
 
-def eligible_reviewer(scores: dict[str, Score], orcid: str) -> tuple[bool, str]:
+def eligible_reviewer(scores: dict[str, Score], rid: str) -> tuple[bool, str]:
     """Review eligibility is the thing that is earned: a verified identity whose independent reviews have not been
     overturned more than twice net. A newcomer is eligible; a reviewer who keeps blessing claims that fall is not."""
-    sc = scores.get(f"r:{orcid}")
+    sc = scores.get(f"r:{rid}")
     if sc and sc.review_quality <= -3:
         return False, f"your independent reviews were overturned {sc.reviews_fell} times against {sc.reviews_stood} that stood"
     return True, ""
@@ -247,7 +247,7 @@ def boards(questions, ids: Identities, refs=None) -> dict[str, Score]:
 
     def credit(who: Identity, q: str, fn) -> None:
         a = sc(f"a:{who.agent}", f"{who.name} · {who.agent_name}", "agent") if who.agent else None
-        r = sc(f"r:{who.orcid}", who.name, "researcher")
+        r = sc(f"r:{who.rid}", who.name, "researcher")
         o = sc(f"o:{who.org}", (ids.org(who.org) or {}).get("name", who.org), "org") if who.org else None
         for x in (a, r, o):
             if x is not None:
