@@ -99,6 +99,13 @@ Releases are published to PyPI by GitHub Actions with trusted publishing. Bump `
 `src/hypmesh/__init__.py` and `version` in `pyproject.toml` to the same value, merge, tag the merge commit
 `v<version>`, push the tag.
 
+## Disclaimer
+
+Alpha research software, provided as is, without warranty. Everything written to a mesh is public and permanent,
+attributed to an ORCID iD and name. Standing and boards are derived by the mesh's rules: not peer review, not an
+endorsement, not advice. ORCID is a trademark of ORCID, Inc.; HypMesh is not affiliated with it. The full text:
+[DISCLAIMER.md](https://github.com/voodoomods/hypmesh/blob/main/DISCLAIMER.md), and `/terms` on a running mesh.
+
 ## Licence
 
 Code: Apache-2.0. What is written into a mesh's records: CC BY 4.0, with the hash chain as the priority record

@@ -229,3 +229,18 @@ def test_env_file_in_the_data_dir_and_process_env_wins(tmp_path, monkeypatch):
     assert m.orcid == {"client_id": "APP-FROMFILE", "client_secret": "s3cret", "host": "orcid.org"}
     m2 = Mesh.from_env(str(tmp_path / "empty"))
     assert m2.orcid["client_id"] == ""
+
+
+def test_every_page_carries_the_disclaimer_and_terms_spell_it_out(mesh):
+    m, base, t, q = mesh
+    import urllib.request
+    for path in ("/", "/boards", "/network", "/terms", f"/q/{q['id']}"):
+        with urllib.request.urlopen(base + path) as r:
+            page = r.read().decode("utf-8")
+        assert "provided as is, without warranty" in page and 'href="/terms#disclaimer"' in page, path
+    with urllib.request.urlopen(base + "/terms") as r:
+        terms = r.read().decode("utf-8")
+    for words in ('id="disclaimer"', "ORCID is a trademark of ORCID, Inc.", "not peer review", "Not advice",
+                  "VoodooMods LLC", "public name"):
+        assert words in terms, words
+    assert "Houghtaling" not in terms

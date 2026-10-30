@@ -136,6 +136,22 @@ sudo systemctl start hypmesh
 
 Then take a fresh backup, which re-verifies every chain on the restored data.
 
+## Before you open it to the public
+
+Running a public mesh makes you the host of what people post on it. The software's disclaimer
+([DISCLAIMER.md](../DISCLAIMER.md), also at `/terms`) covers the software; it does not cover you as an operator.
+Before the doors open:
+
+- **Your own terms and a contact.** Say who runs the mesh, how to reach you, and how you handle a report about
+  something posted there. `/terms` is the software's plain-words terms, not yours.
+- **Personal data, append-only.** Names and ORCID iDs are written into records that cannot be edited or deleted; a
+  withdrawal is a new event, not an erasure. That sits awkwardly with erasure rights such as the GDPR's. Take advice
+  on how you will answer an erasure request before you open a mesh to people in the EU or the UK.
+- **Backups hold personal data and secrets.** Snapshots carry token hashes, session ids and every record. Encrypt
+  the off-site copies and keep them no longer than you need.
+- **The hazard list is a floor.** The excluded domains are refused at opening; the curator's hazard review is still
+  yours to do, question by question.
+
 ## Upgrades
 
 ```bash
