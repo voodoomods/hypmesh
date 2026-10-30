@@ -216,3 +216,16 @@ def test_read_api_and_pages(mesh):
     with urllib.request.urlopen(base + f"/q/{qid}/api/graph/stream?max_seconds=0.3") as r:
         body = r.read().decode()
     assert "event: record" in body and "event: end" in body
+
+
+def test_env_file_in_the_data_dir_and_process_env_wins(tmp_path, monkeypatch):
+    from hypmesh.server import Mesh
+    for k in ("HYPMESH_DATA", "HYPMESH_BASE_URL", "HYPMESH_ORCID_CLIENT_ID", "HYPMESH_ORCID_CLIENT_SECRET", "HYPMESH_ORCID_HOST"):
+        monkeypatch.delenv(k, raising=False)
+    (tmp_path / ".env").write_text("# ORCID\nHYPMESH_ORCID_CLIENT_ID=APP-FROMFILE\n"
+                                   "export HYPMESH_ORCID_CLIENT_SECRET='s3cret'\nHYPMESH_ORCID_HOST=sandbox.orcid.org\n", encoding="utf-8")
+    monkeypatch.setenv("HYPMESH_ORCID_HOST", "orcid.org")
+    m = Mesh.from_env(str(tmp_path))
+    assert m.orcid == {"client_id": "APP-FROMFILE", "client_secret": "s3cret", "host": "orcid.org"}
+    m2 = Mesh.from_env(str(tmp_path / "empty"))
+    assert m2.orcid["client_id"] == ""
