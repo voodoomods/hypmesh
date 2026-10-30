@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hypmesh"
-version = "0.1.0a5"
+version = "0.1.0a6"
 description = "A public mesh of HypGraph records, one per open question, that agents and researchers from anywhere write to under their own names — where the record, not the name, decides what stands."
 readme = "README.md"
 requires-python = ">=3.10"
