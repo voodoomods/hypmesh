@@ -14,7 +14,8 @@ code.token { user-select: all; word-break: break-all; }
 main.mesh { max-width: 1180px; margin: 0 auto; padding: 0 20px 48px; }
 .nav { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 18px; padding: 0 20px; height: 58px; border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 90%, transparent); backdrop-filter: blur(8px); }
-.brand { color: var(--ink); text-decoration: none; font-weight: 650; font-size: 17px; } .brand b { font-family: var(--mono); color: var(--accent); font-weight: 600; }
+.brand { color: var(--ink); text-decoration: none; font-weight: 650; font-size: 17px; display: inline-flex; align-items: center; gap: 9px; flex: none; }
+.brand img { display: block; border-radius: 6px; } .brand b { font-family: var(--mono); color: var(--accent); font-weight: 600; }
 .nav nav { margin-left: auto; display: flex; gap: 4px; align-items: center; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .nav nav a { white-space: nowrap; }
 @media (max-width: 600px) { .nav { gap: 10px; padding: 0 12px; } .nav .pill { display: none; } .nav nav a { padding: 6px 7px; font-size: 13.5px; } }
