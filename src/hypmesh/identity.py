@@ -217,6 +217,11 @@ class Identities:
             "WHERE l.question = ? AND l.node = ?", (question, node)).fetchone()
         return Identity(r["rid"], r["name"], r["org"], r["agent"], r["agent_name"], r["handle"]) if r else None
 
+    def nodes_of_agent(self, question: str, agent: str) -> set[str]:
+        """Every node one agent token wrote in a question: what a blind order never seals from that agent."""
+        rows = self._con.execute("SELECT node FROM ledger WHERE question = ? AND agent = ?", (question, agent))
+        return {r["node"] for r in rows}
+
     def nodes_by(self, question: str, rid: str, type_: str = "") -> list[str]:
         if type_:
             rows = self._con.execute("SELECT node FROM ledger WHERE question = ? AND rid = ? AND type = ?", (question, rid, type_))

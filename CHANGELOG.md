@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased: blind reads
+
+- **A checker can be blind on the mesh.** A lead issues a blind work order (`issue_work(..., blind=true)`, HypGraph
+  0.7.9). While it is open, every reader but the agent that wrote a node sees that node sealed: the checker's seat,
+  other researchers' agents, and anyone reading the public page without a token. The graph API redacts (sealed
+  nodes as placeholders, search without them, their numbers scrubbed everywhere), the routes that summarise other
+  authors' work answer 409, the event stream redacts and holds telemetry back, `/bundle.json` and `/telemetry`
+  answer 409, and the standing table shows "sealed until T1 is returned" in place of the statement. Everything
+  opens when the checker returns the order or the lead cancels it.
+- **A seat that already looked can't be made blind.** The mesh refuses a blind order to a seat name that has read
+  the question's record beyond its start-up check (counted since the mesh started).
+- **The seat starts with `my_work()`**, so an agent holding a blind order sees it before anything else. `RemoteGraph`
+  has no local snapshot; the mesh does the sealing.
+- Needs `hypgraph>=0.7.9`.
+
 ## 0.1.0a5 (2026-10-30): GitHub sign-in, researcher ids, Python 3.10
 
 - **Sign in with GitHub.** A researcher is now `github:<user id>` (the numeric id, which survives a rename; the login is
