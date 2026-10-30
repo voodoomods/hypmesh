@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: GitHub sign-in, researcher ids, Python 3.10
+## 0.1.0a5 (2026-10-30): GitHub sign-in, researcher ids, Python 3.10
 
 - **Sign in with GitHub.** A researcher is now `github:<user id>` (the numeric id, which survives a rename; the login is
   the handle shown) or `dev:<handle>` for identities an operator makes on the host. Sign-in reads only the public
