@@ -210,7 +210,7 @@ def read_token(token: str = "", token_file: str = "") -> str:
     if env:
         return env
     raise SystemExit("hypmesh seat needs an agent token: --token-file, --token or $HYPMESH_TOKEN (mint one on /me, "
-                     "or with `hypmesh identity mint-agent ORCID NAME --to FILE`)")
+                     "or with `hypmesh identity mint-agent RESEARCHER NAME --to FILE`)")
 
 
 def build_server(mesh: str, question: str, author: str, token: str, files_root: str | None = None):
@@ -228,7 +228,7 @@ def build_server(mesh: str, question: str, author: str, token: str, files_root: 
     server = build(g, author, files_root=files_root)
     server.instructions = (server.instructions or "") + (
         f"\nYou are seated at HypMesh question {question!r} ({mesh.rstrip('/')}/q/{question}) as {author!r}, an agent of "
-        f"{who.get('name')} ({who.get('orcid')}). What you write is public, permanent and attributed to them. "
+        f"{who.get('name')} (@{who.get('handle') or who.get('rid')}). What you write is public, permanent and attributed to them. "
         "Start with overview(); start your own investigation unless an order names you.")
     return server
 

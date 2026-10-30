@@ -11,7 +11,7 @@ import pytest
 
 from hypmesh.server import Mesh, make_server
 
-ADA, BLAISE, CYRUS = "0000-0002-1825-0097", "0000-0001-5109-3700", "0000-0002-9079-593X"
+ADA, BLAISE, CYRUS = "dev:ada", "dev:blaise", "dev:cyrus"
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def mesh(tmp_path):
     m.ids.add_researcher(ADA, "Ada", "u1")
     m.ids.add_researcher(BLAISE, "Blaise", "l2")
     m.ids.add_researcher(CYRUS, "Cyrus")                       # unaffiliated: counts as an organisation of one
-    tokens = {name: m.ids.mint_agent(orcid, f"{name}-agent")[1] for name, orcid in (("ada", ADA), ("blaise", BLAISE), ("cyrus", CYRUS))}
+    tokens = {name: m.ids.mint_agent(rid, f"{name}-agent")[1] for name, rid in (("ada", ADA), ("blaise", BLAISE), ("cyrus", CYRUS))}
     tokens["ada2"] = m.ids.mint_agent(ADA, "ada-second-agent")[1]
     q = m.q.open("Does X beat Y?", "Measure X and Y on the data and say which is larger, with the count.", hazard_reviewed=True, qid="x-vs-y")
     srv = make_server(m, "127.0.0.1", 0)
@@ -66,7 +66,7 @@ def test_no_token_no_write_and_reserved_names(mesh):
     st, out = write(base, q["id"], t["ada"], op="create", author="instrument", type="run", fields={"kind": "lab", "name": "x", "state": "succeeded"})
     assert st == 403
     st, me = call(base, "/api/me", token=t["ada"])
-    assert st == 200 and me["orcid"] == ADA and me["agent_name"] == "ada-agent"
+    assert st == 200 and me["rid"] == ADA and me["handle"] == "ada" and me["agent_name"] == "ada-agent"
 
 
 def _ada_investigation(base, qid, token):
@@ -115,7 +115,7 @@ def test_standing_from_L0_to_L3(mesh):
     c, _ = standing(base, qid, claim)
     assert c["level"] == "L1" and c["independent"] == []
 
-    # Blaise (another ORCID, another org): the mesh seats him on the board, his check makes the claim verified — L2
+    # Blaise (another researcher, another org): the mesh seats him on the board, his check makes the claim verified — L2
     st, out = write(base, qid, t["blaise"], op="review", author="blaise", target=claim, verdict="checked",
                     method="Loaded the data myself and counted X and Y with a different script.", notes="I count 7 and 5 as well.")
     assert st == 200, out
@@ -220,16 +220,16 @@ def test_read_api_and_pages(mesh):
 
 def test_env_file_in_the_data_dir_and_process_env_wins(tmp_path, monkeypatch):
     from hypmesh.server import Mesh
-    for k in ("HYPMESH_DATA", "HYPMESH_BASE_URL", "HYPMESH_ORCID_CLIENT_ID", "HYPMESH_ORCID_CLIENT_SECRET", "HYPMESH_ORCID_HOST"):
+    for k in ("HYPMESH_DATA", "HYPMESH_BASE_URL", "HYPMESH_GITHUB_CLIENT_ID", "HYPMESH_GITHUB_CLIENT_SECRET", "HYPMESH_GITHUB_MIN_AGE_DAYS"):
         monkeypatch.delenv(k, raising=False)
-    (tmp_path / ".env").write_text("# ORCID\nHYPMESH_ORCID_CLIENT_ID=APP-FROMFILE\n"
-                                   "export HYPMESH_ORCID_CLIENT_SECRET='s3cret'\nHYPMESH_ORCID_HOST=sandbox.orcid.org\n", encoding="utf-8")
-    monkeypatch.setenv("HYPMESH_ORCID_HOST", "orcid.org")
+    lines = ["# GitHub sign-in", "HYPMESH_GITHUB_CLIENT_ID=Iv1.fromfile", "export HYPMESH_GITHUB_CLIENT_SECRET='s3cret'",
+             "HYPMESH_GITHUB_MIN_AGE_DAYS=7"]
+    (tmp_path / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setenv("HYPMESH_GITHUB_MIN_AGE_DAYS", "90")
     m = Mesh.from_env(str(tmp_path))
-    assert m.orcid == {"client_id": "APP-FROMFILE", "client_secret": "s3cret", "host": "orcid.org"}
+    assert m.github == {"client_id": "Iv1.fromfile", "client_secret": "s3cret", "min_age_days": 90}
     m2 = Mesh.from_env(str(tmp_path / "empty"))
-    assert m2.orcid["client_id"] == ""
-
+    assert m2.github["client_id"] == "" and m2.github["min_age_days"] == 90      # the process environment still applies
 
 def test_every_page_carries_the_disclaimer_and_terms_spell_it_out(mesh):
     m, base, t, q = mesh
@@ -240,7 +240,7 @@ def test_every_page_carries_the_disclaimer_and_terms_spell_it_out(mesh):
         assert "provided as is, without warranty" in page and 'href="/terms#disclaimer"' in page, path
     with urllib.request.urlopen(base + "/terms") as r:
         terms = r.read().decode("utf-8")
-    for words in ('id="disclaimer"', "ORCID is a trademark of ORCID, Inc.", "not peer review", "Not advice",
+    for words in ('id="disclaimer"', "GitHub is a trademark of GitHub, Inc.", "not peer review", "Not advice",
                   "VoodooMods LLC", "public name"):
         assert words in terms, words
     assert "Houghtaling" not in terms

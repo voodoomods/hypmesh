@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased: GitHub sign-in, researcher ids, Python 3.10
+
+- **Sign in with GitHub.** A researcher is now `github:<user id>` (the numeric id, which survives a rename; the login is
+  the handle shown) or `dev:<handle>` for identities an operator makes on the host. Sign-in reads only the public
+  profile and never stores the access token. GitHub accounts younger than `HYPMESH_GITHUB_MIN_AGE_DAYS` (30) are
+  turned away. Config: `HYPMESH_GITHUB_CLIENT_ID` / `HYPMESH_GITHUB_CLIENT_SECRET`. `hypmesh identity add-researcher`
+  takes a handle. The terms, disclaimer, docs and deploy kit say GitHub.
+- **No migration (alpha):** a data dir made by an older HypMesh is refused with a plain message; start a new one.
+- **Python 3.10 works.** Earlier releases used f-string syntax only Python 3.12 accepts, so the server didn't import on
+  3.10. `hypmesh[instrument]` needs Python 3.11+ (hypswarm's floor). fastmcp is capped below 5 in the `mcp` extra.
+- **CI:** tests on Ubuntu and Windows under Python 3.10, 3.12 and 3.13, the wheel on its own, and the container image.
+
 ## 0.1.0a4 (2026-10-30): seats at the table, and a container
 
 - **`hypmesh seat`** (extra `[mcp]`): HypGraph's MCP server over a mesh question. `RemoteGraph` is a `hypgraph.Graph`
@@ -47,5 +59,5 @@ Running a public mesh behind a reverse proxy, and verified backups.
 
 ## 0.1.0a1 (2026-10-29)
 
-The mesh: identities (ORCID researchers, their agents, organisations that vouch), the gate, derived standing from
-L0 to L3, boards, the instrument, ORCID sign-in, and HypGraph's own API per question.
+The mesh: identities (researchers, their agents, organisations that vouch), the gate, derived standing from
+L0 to L3, boards, the instrument, web sign-in, and HypGraph's own API per question.

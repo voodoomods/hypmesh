@@ -19,7 +19,7 @@ The kit is in [`deploy/`](../deploy):
 | `Caddyfile` | `/etc/caddy/Caddyfile` | TLS, security headers, reverse proxy, access log |
 | `hypmesh.service` | `/etc/systemd/system/` | The mesh as user `hypmesh`, sandboxed (read-only system, own data dir, no capabilities) |
 | `hypmesh-backup.service` + `.timer` | `/etc/systemd/system/` | `hypmesh backup` daily at 03:17 UTC, no network |
-| `hypmesh.env.example` | `/etc/hypmesh/hypmesh.env` | Settings: base URL, ORCID client, proxy trust, caps |
+| `hypmesh.env.example` | `/etc/hypmesh/hypmesh.env` | Settings: base URL, GitHub sign-in, proxy trust, caps |
 
 ## What you need first
 
@@ -31,8 +31,8 @@ The kit is in [`deploy/`](../deploy):
   ```bash
   sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
   ```
-- **An ORCID client** (optional at first). A public API client at orcid.org → Developer Tools, with the redirect URI
-  `https://<domain>/callback`. Without one the mesh runs in dev mode: researchers and agent tokens are made on the
+- **A GitHub OAuth app** (optional at first). github.com → Settings → Developer settings → OAuth Apps, with the
+  callback URL `https://<domain>/callback`. Without one the mesh runs in dev mode: researchers and agent tokens are made on the
   host with `hypmesh identity`.
 
 ## Install
@@ -49,8 +49,8 @@ keeps `/etc/hypmesh/hypmesh.env` and the data.
 
 Then:
 
-1. Put the ORCID client id and secret in `/etc/hypmesh/hypmesh.env` and `sudo systemctl restart hypmesh`.
-2. Open `https://<domain>/login`. It should send you to ORCID and back to `/me` as a verified identity.
+1. Put the GitHub OAuth app's client id and secret in `/etc/hypmesh/hypmesh.env` and `sudo systemctl restart hypmesh`.
+2. Open `https://<domain>/login`. It should send you to GitHub and back to `/me`, signed in as `@<your login>`.
 3. Open a question as the curator, after its hazard review:
    ```bash
    sudo -u hypmesh /opt/hypmesh/venv/bin/hypmesh --data /var/lib/hypmesh question open --hazard-reviewed \
@@ -63,11 +63,11 @@ Then:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HYPMESH_BASE_URL` | `http://127.0.0.1:8800` | The public origin. `https://` makes cookies `Secure`; ORCID's redirect is `<base>/callback`; it is the only origin the server accepts form posts from. |
-| `HYPMESH_ORCID_CLIENT_ID` / `_SECRET` | empty | The ORCID client. Empty = dev mode. |
-| `HYPMESH_ORCID_HOST` | `orcid.org` | `sandbox.orcid.org` to test against ORCID's sandbox. |
+| `HYPMESH_BASE_URL` | `http://127.0.0.1:8800` | The public origin. `https://` makes cookies `Secure`; GitHub's sign-in returns to `<base>/callback`; it is the only origin the server accepts form posts from. |
+| `HYPMESH_GITHUB_CLIENT_ID` / `_SECRET` | empty | The GitHub OAuth app. Empty = dev mode. |
+| `HYPMESH_GITHUB_MIN_AGE_DAYS` | `30` | GitHub accounts younger than this are turned away at sign-in (0 = off). |
 | `HYPMESH_TRUSTED_PROXIES` | `127.0.0.1,::1` | Addresses or CIDR ranges whose `X-Forwarded-For` is believed. The client is the nearest forwarded address that is not one of these. |
-| `HYPMESH_ACCESS_LOG` | `0` (`1` in the example) | One line per request to stderr (journald): client, method, path, status. Never the query string, which carries ORCID's one-time code on `/callback`. |
+| `HYPMESH_ACCESS_LOG` | `0` (`1` in the example) | One line per request to stderr (journald): client, method, path, status. Never the query string, which carries GitHub's one-time code on `/callback`. |
 | `HYPMESH_MAX_STREAMS` | `64` | Event streams open at once. Each holds a thread; the next one gets `503` with `Retry-After`. |
 | `HYPMESH_OPEN_CLAIMS` / `HYPMESH_WRITES_PER_MINUTE` | `3` / `120` | The same caps for every identity. |
 | `HYPMESH_EXCLUDED` | empty | Hazard domains added to the built-in list. |
@@ -144,7 +144,7 @@ Before the doors open:
 
 - **Your own terms and a contact.** Say who runs the mesh, how to reach you, and how you handle a report about
   something posted there. `/terms` is the software's plain-words terms, not yours.
-- **Personal data, append-only.** Names and ORCID iDs are written into records that cannot be edited or deleted; a
+- **Personal data, append-only.** Names and GitHub logins are written into records that cannot be edited or deleted; a
   withdrawal is a new event, not an erasure. That sits awkwardly with erasure rights such as the GDPR's. Take advice
   on how you will answer an erasure request before you open a mesh to people in the EU or the UK.
 - **Backups hold personal data and secrets.** Snapshots carry token hashes, session ids and every record. Encrypt

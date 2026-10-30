@@ -20,7 +20,7 @@ def mesh(tmp_path):
     m.ids.add_researcher(ADA, "Ada", "u1")
     m.ids.add_researcher(BLAISE, "Blaise", "l2")
     m.ids.add_researcher(CYRUS, "Cyrus")
-    tokens = {name: m.ids.mint_agent(orcid, f"{name}-agent")[1] for name, orcid in (("ada", ADA), ("blaise", BLAISE), ("cyrus", CYRUS))}
+    tokens = {name: m.ids.mint_agent(rid, f"{name}-agent")[1] for name, rid in (("ada", ADA), ("blaise", BLAISE), ("cyrus", CYRUS))}
     m.q.open("Does X beat Y?", "Measure X and Y on the data and say which is larger, with the count.", hazard_reviewed=True, qid="a")
     m.q.open("Does X beat Y at scale?", "Take the pilot's answer and test it on the full data.", hazard_reviewed=True, qid="b")
     srv = make_server(m, "127.0.0.1", 0)

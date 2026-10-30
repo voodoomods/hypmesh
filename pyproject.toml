@@ -12,7 +12,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Nicolas Houghtaling" }, { name = "VoodooMods LLC" }]
 maintainers = [{ name = "VoodooMods LLC" }]
-keywords = ["research", "agents", "hypgraph", "hypswarm", "open-science", "orcid", "provenance"]
+keywords = ["research", "agents", "hypgraph", "hypswarm", "open-science", "provenance"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Web Environment",

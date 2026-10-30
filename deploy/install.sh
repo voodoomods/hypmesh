@@ -43,7 +43,7 @@ say "package: $SPEC"
 /opt/hypmesh/venv/bin/hypmesh --version
 
 if [[ ! -f /etc/hypmesh/hypmesh.env ]]; then
-  say "config: /etc/hypmesh/hypmesh.env (new; add the ORCID client there)"
+  say "config: /etc/hypmesh/hypmesh.env (new; add the GitHub OAuth app there)"
   sed "s#https://mesh.example.org#https://${DOMAIN}#g" "$HERE/hypmesh.env.example" > /etc/hypmesh/hypmesh.env
 else
   say "config: /etc/hypmesh/hypmesh.env kept as it is"
@@ -76,8 +76,8 @@ for _ in $(seq 1 30); do
     cat <<EOF
 
 Next:
-  1. ORCID: add https://${DOMAIN}/callback to the client's redirect URIs, then put the client id and
-     secret in /etc/hypmesh/hypmesh.env and run: systemctl restart hypmesh
+  1. GitHub sign-in: create an OAuth app with callback URL https://${DOMAIN}/callback, then put its client id
+     and secret in /etc/hypmesh/hypmesh.env and run: systemctl restart hypmesh
   2. Open a question as the curator:
      sudo -u hypmesh /opt/hypmesh/venv/bin/hypmesh --data /var/lib/hypmesh question open --hazard-reviewed \\
        --title "..." --objective "..."

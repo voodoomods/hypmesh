@@ -61,7 +61,7 @@ class Gate:
     # ── who ──
     def identify(self, token: str) -> Identity:
         if self.instrument_token and token and token == self.instrument_token:
-            return Identity("0000-0000-0000-0000", "the mesh's instrument", None, "instrument", INSTRUMENT)
+            return Identity("dev:instrument", "the mesh's instrument", None, "instrument", INSTRUMENT)
         who = self.ids.identity_for_token(token)
         if not who:
             raise Refusal(401, "a bearer token minted under a researcher is required to write (hypmesh identity mint-agent, or /me)")
@@ -70,7 +70,7 @@ class Gate:
     def _rate(self, who: Identity) -> None:
         now = time.monotonic()
         with self._lock:
-            dq = self._recent[who.orcid]
+            dq = self._recent[who.rid]
             while dq and now - dq[0] > 60:
                 dq.popleft()
             if len(dq) >= self.writes_per_minute:
@@ -186,13 +186,13 @@ class Gate:
             if n.get("created_by") == CURATOR:
                 raise Refusal(403, "the curator's investigation is edited by the curator; start your own investigation in this record")
             return                                   # written before the ledger, or by the mesh itself
-        if owner.orcid != who.orcid:
+        if owner.rid != who.rid:
             raise Refusal(403, f"{nid} belongs to another researcher; you may create, link and review, not edit")
 
     def _cap(self, g, qid: str, who: Identity) -> None:
         s = g.snapshot()
         open_ = 0
-        for nid in self.ids.nodes_by(qid, who.orcid, "claim"):
+        for nid in self.ids.nodes_by(qid, who.rid, "claim"):
             if nid not in s.nodes:
                 continue
             st = D.state(s, nid)
@@ -208,10 +208,10 @@ class Gate:
         except Exception as e:
             raise Refusal(404, f"no such node to review: {e}")
         owner = self.ids.owner(qid, target)
-        if owner is None or owner.orcid == who.orcid:
+        if owner is None or owner.rid == who.rid:
             return                                   # the author's own identity: the record decides (L1 at most)
         from .standing import boards, eligible_reviewer
-        ok, why = eligible_reviewer(boards(self.q, self.ids), who.orcid)
+        ok, why = eligible_reviewer(boards(self.q, self.ids), who.rid)
         if not ok:
             raise Refusal(403, f"not eligible to review: {why}")
         s = g.snapshot()

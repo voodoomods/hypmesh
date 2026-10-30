@@ -48,11 +48,11 @@ def cmd_identity(a) -> int:
         if a.action == "add-org":
             print(json.dumps(ids.add_org(a.id, a.name, a.domain)))
         elif a.action == "add-researcher":
-            print(json.dumps(ids.add_researcher(a.orcid, a.name, a.org, verified=a.verified)))
+            print(json.dumps(ids.add_researcher(a.researcher, a.name, a.org, verified=a.verified)))
         elif a.action == "vouch":
-            print(json.dumps(ids.vouch(a.orcid, a.org)))
+            print(json.dumps(ids.vouch(a.researcher, a.org)))
         elif a.action == "mint-agent":
-            agent, token = ids.mint_agent(a.orcid, a.name)
+            agent, token = ids.mint_agent(a.researcher, a.name)
             if a.to:
                 out = Path(a.to).expanduser()
                 out.parent.mkdir(parents=True, exist_ok=True)
@@ -61,17 +61,17 @@ def cmd_identity(a) -> int:
                     out.chmod(0o600)
                 except OSError:
                     pass
-                print(f"agent {agent['id']} ({agent['name']}) under {agent['orcid']}\ntoken written to {out} (not shown)")
+                print(f"agent {agent['id']} ({agent['name']}) under {agent['rid']}\ntoken written to {out} (not shown)")
             else:
-                print(f"agent {agent['id']} ({agent['name']}) under {agent['orcid']}\ntoken (shown once): {token}")
+                print(f"agent {agent['id']} ({agent['name']}) under {agent['rid']}\ntoken (shown once): {token}")
         elif a.action == "revoke":
             print("revoked" if ids.revoke_agent(a.agent) else "no such active agent")
         elif a.action == "list":
             for o in ids.orgs():
                 print(f"org {o['id']}: {o['name']}")
             for r in ids.researchers():
-                agents = ", ".join(f"{x['name']}({x['id']}{', revoked' if x['revoked'] else ''})" for x in ids.agents(r["orcid"]))
-                print(f"  {r['orcid']} {r['name']} org={r['org'] or '-'} verified={bool(r['verified'])} agents: {agents or '-'}")
+                agents = ", ".join(f"{x['name']}({x['id']}{', revoked' if x['revoked'] else ''})" for x in ids.agents(r["rid"]))
+                print(f"  {r['rid']} {r['name']} org={r['org'] or '-'} verified={bool(r['verified'])} agents: {agents or '-'}")
         elif a.action == "instrument-token":
             print(m.data / "tokens" / "instrument.token")
     except ValueError as e:
@@ -119,20 +119,20 @@ def cmd_demo(a) -> int:
     ids.add_org("example-u", "Example University", "example.edu")
     ids.add_org("sample-labs", "Sample Labs", "sample.org")
     out = []
-    for orcid, name, org, agent in (("0000-0002-1825-0097", "Ada Example", "example-u", "ada-swarm"),
-                                    ("0000-0001-5109-3700", "Blaise Sample", "sample-labs", "blaise-swarm"),
-                                    ("0000-0002-9079-593X", "Cyrus Unaffiliated", "", "cyrus-agent")):
-        ids.add_researcher(orcid, name, org)
-        agent_row, token = ids.mint_agent(orcid, agent)
-        out.append((name, orcid, org or "unaffiliated", agent_row["id"], token))
+    for rid, name, org, agent in (("dev:ada", "Ada Example", "example-u", "ada-swarm"),
+                                    ("dev:blaise", "Blaise Sample", "sample-labs", "blaise-swarm"),
+                                    ("dev:cyrus", "Cyrus Unaffiliated", "", "cyrus-agent")):
+        ids.add_researcher(rid, name, org)
+        agent_row, token = ids.mint_agent(rid, agent)
+        out.append((name, rid, org or "unaffiliated", agent_row["id"], token))
     if not m.q.get("demo-treatment-effect"):
         m.q.open("Does the treatment group score higher?",
                  "Two groups of students took the same test (scores.csv: group, score). Is the treatment group's mean higher, "
                  "and is the difference significant at the 5% level? Register every number as a measurement.",
                  domain="statistics", opened_by="curator", hazard_reviewed=True, qid="demo-treatment-effect")
     print(f"[hypmesh] demo mesh in {m.data}\n")
-    for name, orcid, org, aid, token in out:
-        print(f"  {name:20s} {orcid}  {org:14s} agent {aid}\n    token: {token}")
+    for name, rid, org, aid, token in out:
+        print(f"  {name:20s} {rid:14s}  {org:14s} agent {aid}\n    token: {token}")
     print(f"\n  question: {m.base_url}/q/demo-treatment-effect\n  instrument token: {m.data / 'tokens' / 'instrument.token'}\n"
           f"\n  hypmesh serve --data {m.data}\n  hypswarm run --task task.toml --profile scientific --record-url {m.base_url}/q/demo-treatment-effect --token <one of the above>")
     return 0
@@ -191,13 +191,13 @@ def main(argv: list[str] | None = None) -> int:
     c = qs.add_parser("close"); c.add_argument("id"); c.add_argument("--why", required=True)
     s.set_defaults(fn=cmd_question)
 
-    s = sub.add_parser("identity", help="organisations, researchers, agent tokens (dev mode; ORCID sign-in on the web)")
+    s = sub.add_parser("identity", help="organisations, researchers, agent tokens (dev mode; GitHub sign-in on the web)")
     ii = s.add_subparsers(dest="action", required=True)
     x = ii.add_parser("add-org"); x.add_argument("id"); x.add_argument("name"); x.add_argument("--domain", default="")
-    x = ii.add_parser("add-researcher"); x.add_argument("orcid"); x.add_argument("name"); x.add_argument("--org", default="")
+    x = ii.add_parser("add-researcher"); x.add_argument("researcher", help="a handle (becomes dev:<handle>) or a researcher id"); x.add_argument("name"); x.add_argument("--org", default="")
     x.add_argument("--verified", action="store_true")
-    x = ii.add_parser("vouch"); x.add_argument("orcid"); x.add_argument("org")
-    x = ii.add_parser("mint-agent"); x.add_argument("orcid"); x.add_argument("name")
+    x = ii.add_parser("vouch"); x.add_argument("researcher"); x.add_argument("org")
+    x = ii.add_parser("mint-agent"); x.add_argument("researcher"); x.add_argument("name")
     x.add_argument("--to", default="", help="write the token to this file (mode 0600) instead of printing it")
     x = ii.add_parser("revoke"); x.add_argument("agent")
     ii.add_parser("list"); ii.add_parser("instrument-token")
