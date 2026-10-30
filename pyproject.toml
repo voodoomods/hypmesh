@@ -31,7 +31,7 @@ dependencies = ["hypgraph>=0.7.8"]
 
 [project.optional-dependencies]
 instrument = ["hypswarm>=0.1.0a11"]
-mcp = ["hypgraph[mcp]>=0.7.8"]
+mcp = ["hypgraph[mcp]>=0.7.8", "fastmcp>=2.12,<5"]
 dev = ["pytest>=8", "build>=1.2", "hypswarm>=0.1.0a11"]
 
 [project.scripts]
