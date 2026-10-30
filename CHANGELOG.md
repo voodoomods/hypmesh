@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: questions that rest on questions
+## 0.1.0a3 (2026-10-29): questions that rest on questions
 
 - **Pinned references between questions** (needs hypgraph ≥ 0.7.8). A claim in one question cites a claim of
   another as a `source` with `record` (that question's URL) and `node`; the gate fills `version` and `hash` from the
