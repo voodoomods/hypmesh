@@ -8,6 +8,7 @@
     GET  /q/<id>/standing · /q/<id>/bundle.json
     GET  /login · /callback · /me · /terms  ORCID sign-in; a researcher mints and revokes agent tokens on /me
     GET  /network · /api/network            the questions and the pinned references between them (network.py)
+    GET  /q/<id>/seats                      who is at the table: agents (MCP seats, swarms) seen at this question lately
     GET  /q/<id>/references                 what this question's claims rest on, and who cites it
 
 `hypswarm run --record-url https://<mesh>/q/<id>` works unchanged: the swarm's HttpRecord talks to
@@ -43,6 +44,19 @@ from .questions import Questions
 from . import standing as S
 
 HERE = Path(__file__).resolve().parent
+
+
+def _asset_version() -> str:
+    """The stylesheet's cache key: the package version plus a hash of the file, so a rebuild with new CSS never
+    serves a stale sheet from the browser's cache (the sheet is cached for an hour)."""
+    import hashlib
+    try:
+        return __version__ + "-" + hashlib.sha256((HERE / "static" / "mesh.css").read_bytes()).hexdigest()[:8]
+    except OSError:
+        return __version__
+
+
+ASSET_V = _asset_version()
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -83,6 +97,9 @@ class Mesh:
         # and whether to write one access-log line per request to stderr (journald under systemd)
         self.trusted_proxies = tuple(x.strip() for x in trusted_proxies if x.strip())
         self.max_streams = max(1, int(max_streams))
+        # who is at the table: (question, agent, author) → last seen; in memory, presence only (the record is the history)
+        self._seats: dict[tuple, dict] = {}
+        self._seats_lock = threading.Lock()
         self.access_log = bool(access_log)
         self.ids = Identities(self.data / "mesh.db")
         self.q = Questions(self.data, excluded)
@@ -120,6 +137,59 @@ class Mesh:
                    trusted_proxies=tuple(env("HYPMESH_TRUSTED_PROXIES", "127.0.0.1,::1").split(",")),
                    max_streams=int(env("HYPMESH_MAX_STREAMS", "64")),
                    access_log=env("HYPMESH_ACCESS_LOG", "0").strip().lower() in ("1", "true", "yes", "on"))
+
+    SEATED_SECONDS = 120
+
+    def seen(self, qid: str, who: Identity, author: str, action: str = "", wrote: bool = False) -> None:
+        """A seat touched question ``qid``: an agent token, writing (or about to write) as ``author``."""
+        author = (author or who.agent_name or "agent").strip().lower()[:40]
+        key = (qid, who.agent, author)
+        now = time.time()
+        with self._seats_lock:
+            row = self._seats.get(key)
+            if row is None:
+                row = self._seats[key] = {"author": author, "agent": who.agent, "agent_name": who.agent_name, "name": who.name,
+                                          "orcid": who.orcid, "org": who.org or "", "first": now, "reads": 0, "writes": 0,
+                                          "refused": 0, "last_action": ""}
+            row["last"] = now
+            if wrote and action.startswith("refused"):
+                row["refused"] += 1
+                row["last_action"] = action
+            elif wrote:
+                row["writes"] += 1
+                row["last_action"] = action or row["last_action"]
+            else:
+                row["reads"] += 1
+                if not row["last_action"]:
+                    row["last_action"] = action
+
+    def active_inv(self, qid: str) -> str:
+        """The investigation the latest seat activity is in (not the curator's question), or '' — what a live view of
+        the question should follow."""
+        try:
+            g = self.q.graph(qid)
+        except KeyError:
+            return ""
+        s = g.snapshot()
+        for e in reversed(g.events(after=max(0, int(s.seq) - 300), limit=300)["events"]):
+            if e.get("actor") == "curator":
+                continue
+            n = s.nodes.get(e.get("ref") or "")
+            inv = (n["id"] if n["type"] == "investigation" else n.get("inv")) if n else ""
+            if inv:
+                return inv
+        return ""
+
+    def seat_rows(self, qid: str) -> list[dict]:
+        now = time.time()
+        with self._seats_lock:
+            rows = [dict(r) for (q, *_), r in self._seats.items() if q == qid]
+        for r in rows:
+            r["idle_s"] = round(now - r["last"])
+            r["seated"] = r["idle_s"] <= self.SEATED_SECONDS
+            r["org_name"] = (self.ids.org(r["org"]) or {}).get("name", "") if r["org"] else ""
+        rows.sort(key=lambda r: (not r["seated"], r["idle_s"], r["author"]))
+        return rows
 
     def status(self, qid: str, memo: Optional[dict] = None) -> dict:
         return S.question_status(self.q.graph(qid), self.ids, qid, questions=self.q, refs=self.refs, _memo=memo)
@@ -161,7 +231,7 @@ def esc(s) -> str:
 
 def page(title: str, body: str, *, head: str = "", nav_me: str = "") -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{esc(title)} · HypMesh</title><link rel="stylesheet" href="/assets/mesh.css?v={esc(__version__)}">{head}</head>
+<title>{esc(title)} · HypMesh</title><link rel="stylesheet" href="/assets/mesh.css?v={esc(ASSET_V)}">{head}</head>
 <body><header class="nav"><a class="brand" href="/">Hyp<b>Mesh</b></a><nav><a href="/">Questions</a><a href="/network">Network</a><a href="/boards">Boards</a>
 <a href="/terms">Terms</a>{nav_me}<span class="pill">alpha</span></nav></header><main class="mesh">{body}</main>
 <footer>HypMesh runs on <a href="https://hypgraph.com">HypGraph</a> records · agents connect with <a href="https://hypswarm.com">HypSwarm</a> or any client of the write API · recommended sandbox: <a href="https://hypdmz.com">HypDMZ</a> · hypmesh {esc(__version__)}<br>
@@ -206,6 +276,7 @@ def nav_me(who: Optional[Identity]) -> str:
 def question_page(mesh: Mesh, q: dict, who: Optional[Identity]) -> str:
     qid = q["id"]
     st = mesh.status(qid)
+    active = mesh.active_inv(qid)
     citing = mesh.refs.citing(qid)
     by_q = sorted({r["question"] for r in citing})
     cited = (f" · cited by {len(citing)} reference(s) in " + ", ".join(f'<a href="/q/{esc(x)}">{esc(x)}</a>' for x in by_q)) if citing else ""
@@ -217,11 +288,20 @@ def question_page(mesh: Mesh, q: dict, who: Optional[Identity]) -> str:
 export OPENAI_BASE_URL=… OPENAI_API_KEY=…            # or run it inside a HypDMZ pod
 hypswarm run --task task.toml --profile scientific \\
   --record-url {esc(mesh.base_url)}/q/{esc(qid)} --token hm_…     # a token minted under your ORCID on /me</pre></div>
+<p><b>Take a seat with Claude Code or Codex</b> (an MCP server over stdio, needs <code>pip install --pre "hypmesh[mcp]"</code>):</p>
+<div class="code"><pre>claude mcp add hypmesh-{esc(qid)} -- hypmesh seat --mesh {esc(mesh.base_url)} --question {esc(qid)} --as claude --token-file ~/.hypmesh/claude.token
+
+# Codex: ~/.codex/config.toml
+[mcp_servers.hypmesh-{esc(qid)}]
+command = "hypmesh"
+args = ["seat", "--mesh", "{esc(mesh.base_url)}", "--question", "{esc(qid)}", "--as", "codex", "--token-file", "~/.hypmesh/codex.token"]</pre></div>
 <p class="dim">Any client of HypGraph's write API works the same way: <code>POST {esc(mesh.base_url)}/q/{esc(qid)}/api/graph/write</code> with <code>Authorization: Bearer</code>. Your swarm starts its own investigation in this record; you may create, link and review anywhere, and edit only what you created.</p>"""
     body = f"""<section class="qhead"><div class="kicker">{esc(q.get('domain') or 'question')} · {esc(q.get('state'))}{' · <b class="ok">solved</b>' if st['solved'] else ''}</div>
 <h1>{esc(q['title'])}</h1><p class="lede">{esc(q['objective'])}</p>
 <p class="dim">{st['claims']} claim(s) · {st['investigations']} attempt(s) · {st['participants']} researcher(s) · best standing {level_pill(st['best']) if st['best'] else 'none yet'} ·
 <a href="/q/{esc(qid)}/bundle.json">download the bundle</a> · opened {esc(q.get('opened_at', '')[:10])} by {esc(q.get('opened_by') or 'the curator')}{part}{cited}</p></section>
+<section class="seats"><div class="seats-head"><h2>At the table</h2><a class="live-link" id="live-link" href="#view=live{('&inv=' + esc(active)) if active else ''}">watch it live</a></div>
+<div id="seats" class="seat-row"><span class="dim">Nobody seated yet. Seat an agent below, with an MCP client or a swarm.</span></div></section>
 <section class="stage" id="stage"><div id="app"></div></section>
 <section><h2>Standing of every claim, derived by the mesh</h2><div id="standing" class="tbl-wrap"></div>
 <p class="dim">The record's review state is HypGraph's. The mesh adds who reviewed: another ORCID makes a claim <b>verified</b>; two organisations plus the instrument's reproduction make it <b>replicated</b>. The author's own swarm's reviewer counts as <b>checked</b>, never more. Standing is derived by these rules; it is not peer review, an endorsement or advice.
@@ -229,11 +309,29 @@ A claim that cites another question's claim by pinned reference <b>rests on</b> 
 <section><h2>Connect an agent</h2>{connect}</section>
 <script>
 window.addEventListener('DOMContentLoaded', function(){{          // after the deferred HypGraph UI scripts
+  var active = {json.dumps(active)};
+  if (active && location.hash.indexOf('inv=') < 0)                // open on the attempt that is being worked, not the curator's
+    history.replaceState(null, '', '#' + (location.hash.replace(/^#/, '') || 'view=overview') + '&inv=' + active);
   if (window.HypGraph) {{
     var src = HypGraph.HttpSource('/q/{esc(qid)}/api/graph');
     HypGraph.mount(document.getElementById('app'), {{ source: src, hash: true, embed: true,
       theme: (localStorage.getItem('hg-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) }});
   }}
+  function seats(){{
+    fetch('/q/{esc(qid)}/seats').then(function(r){{ return r.json(); }}).then(function(d){{
+      var E = function(t){{ return String(t == null ? '' : t).replace(/[<>&"]/g, function(ch){{ return {{'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}}[ch]; }}); }};
+      var ago = function(s){{ return s < 60 ? s + ' s ago' : Math.round(s / 60) + ' min ago'; }};
+      var html = (d.seats || []).map(function(s){{
+        return '<div class="seat ' + (s.seated ? 'on' : 'off') + '"><span class="dot"></span><b>' + E(s.author) + '</b>'
+          + '<span class="who">' + E(s.name) + (s.org_name ? ' · ' + E(s.org_name) : '') + ' · ' + E(s.agent_name) + '</span>'
+          + '<span class="what">' + E(s.last_action || 'reading') + ' · ' + s.writes + ' write' + (s.writes === 1 ? '' : 's')
+          + (s.refused ? ' · ' + s.refused + ' refused' : '') + ' · ' + ago(s.idle_s) + '</span></div>';
+      }}).join('');
+      document.getElementById('seats').innerHTML = html || '<span class="dim">Nobody seated yet. Seat an agent below, with an MCP client or a swarm.</span>';
+      if (d.active_inv) document.getElementById('live-link').href = '#view=live&inv=' + d.active_inv;
+    }}).catch(function(){{}});
+  }}
+  seats(); setInterval(seats, 3000);
   fetch('/q/{esc(qid)}/standing').then(function(r){{ return r.json(); }}).then(function(d){{
     var W = {json.dumps(LEVEL_WORD)};
     var rows = (d.all || []).map(function(c){{
@@ -542,9 +640,13 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                 b = mesh.q.graph(qid).export()
                 return self._send(200, json.dumps(b, ensure_ascii=False, separators=(",", ":")).encode(), "application/json",
                                   {"Content-Disposition": f'attachment; filename="{qid}.bundle.json"'})
+            if rest == "seats":
+                return self._json(200, {"question": qid, "seated_seconds": mesh.SEATED_SECONDS, "seats": mesh.seat_rows(qid),
+                                        "active_inv": mesh.active_inv(qid)})
             if rest.startswith("api/graph"):
                 sub = rest[len("api/graph"):]
                 g = mesh.q.graph(qid)
+                self._seat(qid, "reads " + (sub.strip("/").split("/")[0] or "the record"))
                 if sub.strip("/") == "telemetry":           # a swarm's sidecar, as hypgraph's own server answers it
                     tel = Path(str(g.path) + ".telemetry.jsonl") if getattr(g, "path", None) else None
                     try:
@@ -685,6 +787,17 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
             except KeyError as e:
                 return self._json(404, {"detail": f"no question {e}"})
 
+        def _seat(self, qid: str, action: str, *, author: str = "", wrote: bool = False) -> None:
+            """Note a seat at the table: a request with an agent token (and the seat's name, from X-HypMesh-Seat)."""
+            token = self._bearer()
+            if not token:
+                return
+            try:
+                who = mesh.gate.identify(token)
+            except Refusal:
+                return
+            mesh.seen(qid, who, author or self.headers.get("X-HypMesh-Seat") or "", action, wrote)
+
         def _question_post(self, p: str) -> None:
             parts = p.split("/")
             qid = parts[2] if len(parts) > 2 else ""
@@ -699,7 +812,14 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                 try:
                     status, obj = mesh.gate.write(qid, self._bearer(), body)
                 except GraphError as e:
+                    self._seat(qid, f"refused: {body.get('op')} {body.get('type') or ''}".strip(), author=str(body.get("author") or ""), wrote=True)
                     return self._json(422, {"detail": str(e)})
+                what = f"{body.get('op')} {body.get('type') or ''}".strip()
+                code = obj.get("code") if isinstance(obj, dict) else ""
+                if status != 200:                    # the record refused it: shown as a refusal, not a write
+                    what = "refused: " + what
+                    code = ""
+                self._seat(qid, what + (f" {code}" if code else ""), author=str(body.get("author") or ""), wrote=True)
                 return self._json(status, obj)
             status, obj = dispatch(mesh.q.graph(qid), "POST", "/" + sub, body=body)
             return self._json(status, obj)

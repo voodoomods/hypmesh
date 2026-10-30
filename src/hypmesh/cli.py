@@ -53,7 +53,17 @@ def cmd_identity(a) -> int:
             print(json.dumps(ids.vouch(a.orcid, a.org)))
         elif a.action == "mint-agent":
             agent, token = ids.mint_agent(a.orcid, a.name)
-            print(f"agent {agent['id']} ({agent['name']}) under {agent['orcid']}\ntoken (shown once): {token}")
+            if a.to:
+                out = Path(a.to).expanduser()
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(token + "\n", encoding="utf-8")
+                try:
+                    out.chmod(0o600)
+                except OSError:
+                    pass
+                print(f"agent {agent['id']} ({agent['name']}) under {agent['orcid']}\ntoken written to {out} (not shown)")
+            else:
+                print(f"agent {agent['id']} ({agent['name']}) under {agent['orcid']}\ntoken (shown once): {token}")
         elif a.action == "revoke":
             print("revoked" if ids.revoke_agent(a.agent) else "no such active agent")
         elif a.action == "list":
@@ -67,6 +77,13 @@ def cmd_identity(a) -> int:
     except ValueError as e:
         print(f"[hypmesh] {e}", file=sys.stderr)
         return 2
+    return 0
+
+
+def cmd_seat(a) -> int:
+    from .seat import read_token, run
+    run(a.mesh, a.question, a.as_, read_token(a.token, a.token_file), transport=a.transport, port=a.port,
+        files_root=a.files_root or None)
     return 0
 
 
@@ -179,9 +196,22 @@ def main(argv: list[str] | None = None) -> int:
     x.add_argument("--verified", action="store_true")
     x = ii.add_parser("vouch"); x.add_argument("orcid"); x.add_argument("org")
     x = ii.add_parser("mint-agent"); x.add_argument("orcid"); x.add_argument("name")
+    x.add_argument("--to", default="", help="write the token to this file (mode 0600) instead of printing it")
     x = ii.add_parser("revoke"); x.add_argument("agent")
     ii.add_parser("list"); ii.add_parser("instrument-token")
     s.set_defaults(fn=cmd_identity)
+
+    s = sub.add_parser("seat", help="take a seat at a question: HypGraph's MCP tools over the mesh (needs hypmesh[mcp])")
+    s.add_argument("--mesh", default=__import__("os").environ.get("HYPMESH_BASE_URL", "http://127.0.0.1:8800"),
+                   help="the mesh's base URL (default $HYPMESH_BASE_URL, else http://127.0.0.1:8800)")
+    s.add_argument("--question", required=True, help="the question id")
+    s.add_argument("--as", dest="as_", default="agent", help="the author name this seat writes as (e.g. claude, codex)")
+    s.add_argument("--token-file", default="", help="file holding the agent token (else --token or $HYPMESH_TOKEN)")
+    s.add_argument("--token", default="", help=argparse.SUPPRESS)
+    s.add_argument("--transport", choices=["stdio", "http"], default="stdio")
+    s.add_argument("--port", type=int, default=8766, help="for --transport http (loopback)")
+    s.add_argument("--files-root", default="", help="where register_run may hash files (default: the current directory)")
+    s.set_defaults(fn=cmd_seat)
 
     s = sub.add_parser("instrument", help="the reproduction worker (needs hypmesh[instrument])")
     s.add_argument("--mesh", default="http://127.0.0.1:8800"); s.add_argument("--token", default=""); s.add_argument("--token-file", default="")

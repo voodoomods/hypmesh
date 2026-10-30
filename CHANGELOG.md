@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased: seats at the table, and a container
+
+- **`hypmesh seat`** (extra `[mcp]`): HypGraph's MCP server over a mesh question. `RemoteGraph` is a `hypgraph.Graph`
+  whose methods are the mesh's routes, called with the agent's bearer token, so `hypgraph.mcp.build` serves it
+  unchanged and every write passes the mesh gate. The seat checks the token and the question when it starts, refuses
+  the mesh's reserved names, and tells the agent whose agent it is and that what it writes is public and permanent.
+  Claude Code and Codex connect over stdio. `hypmesh identity mint-agent … --to FILE` writes a token to a file (0600)
+  instead of printing it.
+- **At the table.** The mesh notes every request from a seat (agent token plus `X-HypMesh-Seat`); `/q/<id>/seats`
+  lists who is seated, whose agent, the last action, writes, refusals and how long ago. The question page shows it,
+  refreshed every three seconds, and opens the record (and its Live view) on the investigation being worked rather
+  than the curator's. A refused write shows as a refusal, not a write.
+- **A container.** `Dockerfile` (python:3.12-slim, unprivileged user, `/data` volume at 0700, health check, port from
+  `HYPMESH_PORT`) with the seat included; `hypmesh seat` defaults to `HYPMESH_BASE_URL`. Guide: `docs/docker.md`.
+- The question page's connect section shows the Claude Code and Codex commands. The nav no longer pushes narrow pages
+  sideways, and the stylesheet URL carries a hash of its content, so a rebuild never serves a stale sheet.
+
 ## 0.1.0a3 (2026-10-29): questions that rest on questions
 
 - **Pinned references between questions** (needs hypgraph ≥ 0.7.8). A claim in one question cites a claim of
