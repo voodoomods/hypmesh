@@ -96,7 +96,9 @@ def cmd_instrument(a) -> int:
     try:
         import hypswarm  # noqa: F401
     except ImportError:
-        print("[hypmesh] the instrument needs hypswarm: pip install 'hypmesh[instrument]'", file=sys.stderr)
+        print("[hypmesh] the instrument needs hypswarm, which needs Python 3.11 or newer: pip install 'hypmesh[instrument]'"
+              + (f" (this is Python {sys.version_info.major}.{sys.version_info.minor})" if sys.version_info < (3, 11) else ""),
+              file=sys.stderr)
         return 2
     token = a.token or (Path(a.token_file).read_text(encoding="utf-8").strip() if a.token_file else "")
     if not token:
