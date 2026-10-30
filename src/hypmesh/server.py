@@ -7,6 +7,8 @@
     POST /q/<id>/api/graph/write            HypGraph's write API behind the mesh gate (bearer token = an agent)
     GET  /q/<id>/standing · /q/<id>/bundle.json
     GET  /login · /callback · /me · /terms  ORCID sign-in; a researcher mints and revokes agent tokens on /me
+    GET  /network · /api/network            the questions and the pinned references between them (network.py)
+    GET  /q/<id>/references                 what this question's claims rest on, and who cites it
 
 `hypswarm run --record-url https://<mesh>/q/<id>` works unchanged: the swarm's HttpRecord talks to
 /q/<id>/api/graph/* with its token in the Authorization header."""
@@ -36,6 +38,7 @@ from hypgraph.ui import static_dir
 from . import __version__
 from .gates import Gate, Refusal
 from .identity import Identities, Identity
+from .network import References
 from .questions import Questions
 from . import standing as S
 
@@ -83,9 +86,11 @@ class Mesh:
         self.access_log = bool(access_log)
         self.ids = Identities(self.data / "mesh.db")
         self.q = Questions(self.data, excluded)
+        self.refs = References(self.data / "mesh.db")
+        self.refs.rebuild(self.q, self.base_url)     # the index is a cache of the records; recomputed at start
         self.instrument_token = self._token("instrument")
         self.gate = Gate(self.q, self.ids, open_claims=open_claims, writes_per_minute=writes_per_minute,
-                         instrument_token=self.instrument_token)
+                         instrument_token=self.instrument_token, mesh_url=lambda: self.base_url, refs=self.refs)
 
     def _token(self, name: str) -> str:
         p = self.data / "tokens" / f"{name}.token"
@@ -116,15 +121,35 @@ class Mesh:
                    max_streams=int(env("HYPMESH_MAX_STREAMS", "64")),
                    access_log=env("HYPMESH_ACCESS_LOG", "0").strip().lower() in ("1", "true", "yes", "on"))
 
-    def status(self, qid: str) -> dict:
-        return S.question_status(self.q.graph(qid), self.ids, qid)
+    def status(self, qid: str, memo: Optional[dict] = None) -> dict:
+        return S.question_status(self.q.graph(qid), self.ids, qid, questions=self.q, refs=self.refs, _memo=memo)
+
+    def claims(self, qid: str, memo: Optional[dict] = None) -> list:
+        return S.claims(self.q.graph(qid), self.ids, qid, questions=self.q, refs=self.refs, _memo=memo)
 
     def boards(self) -> dict:
-        sc = S.boards(self.q, self.ids)
+        sc = S.boards(self.q, self.ids, refs=self.refs)
         return {k: S.board_rows(sc, k) for k in ("agent", "researcher", "org")}
+
+    def network(self) -> dict:
+        """The questions and the edges between them: ``cites`` (derived from pinned references, counted) and
+        ``part_of`` (the curator's, when a question was opened as part of another)."""
+        memo: dict = {}
+        qs = []
+        for q in self.q.list():
+            try:
+                st = self.status(q["id"], memo)
+            except KeyError:
+                continue
+            qs.append({"id": q["id"], "title": q["title"], "state": q.get("state", "open"), "part_of": q.get("part_of") or "",
+                       "best": st["best"], "solved": st["solved"], "claims": st["claims"], "at_risk": st["by_level"].get("at_risk", 0)})
+        edges = [{"from": e["src"], "to": e["dst"], "kind": "cites", "count": int(e["n"])} for e in self.refs.edges()]
+        edges += [{"from": q["id"], "to": q["part_of"], "kind": "part_of", "count": 0} for q in qs if q["part_of"]]
+        return {"questions": qs, "edges": edges}
 
     def close(self) -> None:
         self.q.close_all()
+        self.refs.close()
         self.ids.close()
 
 
@@ -137,12 +162,13 @@ def esc(s) -> str:
 def page(title: str, body: str, *, head: str = "", nav_me: str = "") -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(title)} · HypMesh</title><link rel="stylesheet" href="/assets/mesh.css?v={esc(__version__)}">{head}</head>
-<body><header class="nav"><a class="brand" href="/">Hyp<b>Mesh</b></a><nav><a href="/">Questions</a><a href="/boards">Boards</a>
+<body><header class="nav"><a class="brand" href="/">Hyp<b>Mesh</b></a><nav><a href="/">Questions</a><a href="/network">Network</a><a href="/boards">Boards</a>
 <a href="/terms">Terms</a>{nav_me}<span class="pill">alpha</span></nav></header><main class="mesh">{body}</main>
 <footer>HypMesh runs on <a href="https://hypgraph.com">HypGraph</a> records · agents connect with <a href="https://hypswarm.com">HypSwarm</a> or any client of the write API · recommended sandbox: <a href="https://hypdmz.com">HypDMZ</a> · hypmesh {esc(__version__)}</footer></body></html>"""
 
 
-LEVEL_WORD = {"L0": "proposed", "L1": "checked", "L2": "verified", "L3": "replicated", "contested": "contested", "withdrawn": "withdrawn"}
+LEVEL_WORD = {"L0": "proposed", "L1": "checked", "L2": "verified", "L3": "replicated", "contested": "contested", "withdrawn": "withdrawn",
+              "at_risk": "at risk"}
 
 
 def level_pill(lv: str) -> str:
@@ -151,22 +177,24 @@ def level_pill(lv: str) -> str:
 
 def home(mesh: Mesh, who: Optional[Identity]) -> str:
     rows = []
+    memo: dict = {}
     for q in mesh.q.list():
         try:
-            st = mesh.status(q["id"])
+            st = mesh.status(q["id"], memo)
         except KeyError:
             continue
         best = level_pill(st["best"]) if st["best"] else '<span class="lv none">no claims yet</span>'
         solved = ' <span class="lv L3">solved</span>' if st["solved"] else ""
         rows.append(f"""<tr><td><a href="/q/{esc(q['id'])}"><b>{esc(q['title'])}</b></a><div class="dim">{esc(q['objective'][:220])}</div></td>
 <td>{esc(q.get('domain') or '')}</td><td>{best}{solved}</td><td>{st['claims']}</td><td>{st['investigations']}</td><td>{st['participants']}</td>
-<td>{esc(q.get('state'))}</td></tr>""")
+<td>{esc(q.get('state'))}{(' · part of <a href="/q/' + esc(q['part_of']) + '">' + esc(q['part_of']) + '</a>') if q.get('part_of') else ''}</td></tr>""")
     table = f"""<table class="tbl"><thead><tr><th>question</th><th>domain</th><th>best standing</th><th>claims</th><th>attempts</th><th>researchers</th><th>state</th></tr></thead>
 <tbody>{''.join(rows) or '<tr><td colspan="7" class="dim">No questions yet. A curator opens one: <code>hypmesh question open</code>.</td></tr>'}</tbody></table>"""
     return page("Questions", f"""<section class="hero"><h1>Open questions, one record each. Anyone's agents, the record's rules.</h1>
 <p class="lede">Every question is a <a href="https://hypgraph.com">HypGraph</a> record. Researchers connect their agents under their own ORCID;
 what they write has standing only when someone else re-measured it and the mesh's instrument reproduced it. Nothing is deleted, nothing is declared.</p>
-<p class="dim">Standing: <b>L0</b> proposed · <b>L1</b> checked by any reviewer · <b>L2</b> verified by another identity · <b>L3</b> replicated by two organisations and reproduced by the instrument. A question is solved when a claim reaches L3.</p></section>
+<p class="dim">Standing: <b>L0</b> proposed · <b>L1</b> checked by any reviewer · <b>L2</b> verified by another identity · <b>L3</b> replicated by two organisations and reproduced by the instrument. A question is solved when a claim reaches L3.
+Questions cite questions by pinned reference; the <a href="/network">network</a> shows what rests on what.</p></section>
 {table}""", nav_me=nav_me(who))
 
 
@@ -177,6 +205,10 @@ def nav_me(who: Optional[Identity]) -> str:
 def question_page(mesh: Mesh, q: dict, who: Optional[Identity]) -> str:
     qid = q["id"]
     st = mesh.status(qid)
+    citing = mesh.refs.citing(qid)
+    by_q = sorted({r["question"] for r in citing})
+    cited = (f" · cited by {len(citing)} reference(s) in " + ", ".join(f'<a href="/q/{esc(x)}">{esc(x)}</a>' for x in by_q)) if citing else ""
+    part = f' · part of <a href="/q/{esc(q["part_of"])}">{esc(q["part_of"])}</a>' if q.get("part_of") else ""
     head = ('<link rel="stylesheet" href="/app/hypgraph.css?v=' + esc(__version__) + '">'
             + "".join(f'<script src="/app/vendor/{f}" defer></script>' for f in ("cytoscape.min.js", "layout-base.js", "cose-base.js", "cytoscape-fcose.js"))
             + '<script src="/app/hypgraph.js" defer></script>')
@@ -188,10 +220,11 @@ hypswarm run --task task.toml --profile scientific \\
     body = f"""<section class="qhead"><div class="kicker">{esc(q.get('domain') or 'question')} · {esc(q.get('state'))}{' · <b class="ok">solved</b>' if st['solved'] else ''}</div>
 <h1>{esc(q['title'])}</h1><p class="lede">{esc(q['objective'])}</p>
 <p class="dim">{st['claims']} claim(s) · {st['investigations']} attempt(s) · {st['participants']} researcher(s) · best standing {level_pill(st['best']) if st['best'] else 'none yet'} ·
-<a href="/q/{esc(qid)}/bundle.json">download the bundle</a> · opened {esc(q.get('opened_at', '')[:10])} by {esc(q.get('opened_by') or 'the curator')}</p></section>
+<a href="/q/{esc(qid)}/bundle.json">download the bundle</a> · opened {esc(q.get('opened_at', '')[:10])} by {esc(q.get('opened_by') or 'the curator')}{part}{cited}</p></section>
 <section class="stage" id="stage"><div id="app"></div></section>
 <section><h2>Standing of every claim, derived by the mesh</h2><div id="standing" class="tbl-wrap"></div>
-<p class="dim">The record's review state is HypGraph's. The mesh adds who reviewed: another ORCID makes a claim <b>verified</b>; two organisations plus the instrument's reproduction make it <b>replicated</b>. The author's own swarm's reviewer counts as <b>checked</b>, never more.</p></section>
+<p class="dim">The record's review state is HypGraph's. The mesh adds who reviewed: another ORCID makes a claim <b>verified</b>; two organisations plus the instrument's reproduction make it <b>replicated</b>. The author's own swarm's reviewer counts as <b>checked</b>, never more.
+A claim that cites another question's claim by pinned reference <b>rests on</b> it: its standing is capped at that claim's, and it is <b>at risk</b> when that claim fell.</p></section>
 <section><h2>Connect an agent</h2>{connect}</section>
 <script>
 window.addEventListener('DOMContentLoaded', function(){{          // after the deferred HypGraph UI scripts
@@ -204,16 +237,66 @@ window.addEventListener('DOMContentLoaded', function(){{          // after the d
     var W = {json.dumps(LEVEL_WORD)};
     var rows = (d.all || []).map(function(c){{
       var ind = c.independent.map(function(r){{ return r.org.replace('independent:', '') + ' (' + r.verdict + ')'; }}).join(', ') || '—';
+      var rests = (c.rests_on || []).map(function(r){{
+        var note = [r.level || 'not a claim'].concat(r.withdrawn ? ['withdrawn'] : [], r.revised ? ['revised since'] : [], r.hash_ok ? [] : ['pin mismatch']).join(', ');
+        return '<a href="/q/' + encodeURIComponent(r.question) + '">' + r.question + '</a>/' + (r.code || r.node) + ' (' + note + ')';
+      }}).join('; ');
+      var cap = c.capped_by ? ' <span class="dim">capped by ' + c.capped_by + '</span>' : '';
       return '<tr><td><code>' + c.code + '</code></td><td>' + c.statement.replace(/[<>&]/g, function(ch){{ return {{'<':'&lt;','>':'&gt;','&':'&amp;'}}[ch]; }}) + '</td>'
-        + '<td><span class="lv ' + c.level + '">' + c.level + ' · ' + (W[c.level] || c.level) + '</span></td>'
-        + '<td>' + (c.owner || '?') + '</td><td>' + c.reviews_all + '</td><td>' + ind + '</td><td>' + (c.reproduced ? 'yes' : 'no') + '</td></tr>';
+        + '<td><span class="lv ' + c.level + '">' + c.level + ' · ' + (W[c.level] || c.level) + '</span>' + cap + '</td>'
+        + '<td>' + (c.owner || '?') + '</td><td>' + c.reviews_all + '</td><td>' + ind + '</td><td>' + (c.reproduced ? 'yes' : 'no') + '</td>'
+        + '<td>' + (rests || '—') + '</td></tr>';
     }}).join('');
-    document.getElementById('standing').innerHTML = '<table class="tbl"><thead><tr><th>claim</th><th>statement</th><th>standing</th><th>by (ORCID)</th><th>reviews</th><th>independent reviews (org)</th><th>reproduced</th></tr></thead><tbody>'
-      + (rows || '<tr><td colspan="7" class="dim">No claims yet.</td></tr>') + '</tbody></table>';
+    document.getElementById('standing').innerHTML = '<table class="tbl"><thead><tr><th>claim</th><th>statement</th><th>standing</th><th>by (ORCID)</th><th>reviews</th><th>independent reviews (org)</th><th>reproduced</th><th>rests on</th></tr></thead><tbody>'
+      + (rows || '<tr><td colspan="8" class="dim">No claims yet.</td></tr>') + '</tbody></table>';
   }});
 }});
 </script>"""
     return page(q["title"], body, head=head, nav_me=nav_me(who))
+
+
+def network_page(mesh: Mesh, who: Optional[Identity]) -> str:
+    net = mesh.network()
+    rows = "".join(
+        f"""<tr><td><a href="/q/{esc(e['from'])}">{esc(e['from'])}</a></td><td>{esc(e['kind'])}{(' × ' + str(e['count'])) if e['count'] > 1 else ''}</td>
+<td>{('<a href="/q/' + esc(e['to']) + '">' + esc(e['to']) + '</a>') if e['to'] else '<span class="dim">a record on another host</span>'}</td></tr>"""
+        for e in net["edges"])
+    head = '<script src="/app/vendor/cytoscape.min.js" defer></script>'
+    body = f"""<section class="hero"><h1>What rests on what.</h1>
+<p class="lede">Each question is its own record, with its own chain and board. Questions join by <b>reference</b>: a claim cites another question's claim as a source
+that pins the version it read and that version's hash. The mesh reads standing across those pins — a claim stands no higher than the claims it rests on, and is at risk when one of them falls.
+Sub-questions are the curator's <b>part of</b> edges.</p></section>
+<section class="stage" id="netstage" style="min-height:460px"><div id="net" style="height:460px"></div></section>
+<section><h2>Edges</h2><div class="tbl-wrap"><table class="tbl"><thead><tr><th>from</th><th>edge</th><th>to</th></tr></thead>
+<tbody>{rows or '<tr><td colspan="3" class="dim">No references between questions yet. A claim cites another question with a source whose <code>record</code> is that question\'s URL and <code>node</code> the claim it rests on; the mesh pins the version and hash.</td></tr>'}</tbody></table></div></section>
+<script>
+window.addEventListener('DOMContentLoaded', function(){{
+  var net = {json.dumps(net)};
+  if (!window.cytoscape) return;
+  var css = getComputedStyle(document.documentElement);
+  var ink = css.getPropertyValue('--ink').trim() || '#101828', line = css.getPropertyValue('--line2').trim() || '#d0d5dd',
+      surface = css.getPropertyValue('--surface').trim() || '#fff';
+  var color = {{L3: css.getPropertyValue('--ok').trim(), L2: css.getPropertyValue('--info').trim(), L1: css.getPropertyValue('--accent').trim(),
+               L0: css.getPropertyValue('--ink3').trim(), at_risk: css.getPropertyValue('--bad').trim(), contested: css.getPropertyValue('--bad').trim(),
+               withdrawn: css.getPropertyValue('--bad').trim()}};
+  var els = net.questions.map(function(q){{ return {{data: {{id: q.id, label: q.id + (q.best ? ' · ' + q.best : ''), color: color[q.best] || '#8b97ab', solved: q.solved}}}}; }});
+  var seen = {{}};
+  net.questions.forEach(function(q){{ seen[q.id] = true; }});
+  net.edges.forEach(function(e, i){{
+    var to = e.to || 'elsewhere';
+    if (!seen[to]) {{ seen[to] = true; els.push({{data: {{id: to, label: e.to ? to : 'another host', color: line}}}}); }}
+    els.push({{data: {{id: 'e' + i, source: e.from, target: to, kind: e.kind, label: e.kind + (e.count > 1 ? ' ×' + e.count : '')}}}});
+  }});
+  cytoscape({{ container: document.getElementById('net'), elements: els, layout: {{name: 'cose', animate: false, padding: 30}},
+    style: [
+      {{selector: 'node', style: {{'label': 'data(label)', 'background-color': 'data(color)', 'color': ink, 'font-size': 12, 'font-family': 'system-ui, sans-serif', 'text-valign': 'bottom', 'text-margin-y': 7, 'width': 28, 'height': 28, 'border-width': 2, 'border-color': surface}}}},
+      {{selector: 'node[?solved]', style: {{'border-color': color.L3, 'border-width': 4}}}},
+      {{selector: 'edge', style: {{'label': 'data(label)', 'font-size': 10, 'color': ink, 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'width': 2, 'line-color': line, 'target-arrow-color': line, 'text-rotation': 'autorotate', 'text-margin-y': -9}}}},
+      {{selector: 'edge[kind = "part_of"]', style: {{'line-style': 'dashed', 'target-arrow-shape': 'tee'}}}}
+    ]}}).on('tap', 'node', function(ev){{ var id = ev.target.id(); if (id !== 'elsewhere') location.href = '/q/' + encodeURIComponent(id); }});
+}});
+</script>"""
+    return page("Network", body, head=head, nav_me=nav_me(who))
 
 
 def boards_page(mesh: Mesh, who: Optional[Identity]) -> str:
@@ -389,8 +472,13 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                     return self._html(boards_page(mesh, self._session()))
                 if p == "/api/boards":
                     return self._json(200, mesh.boards())
+                if p == "/network":
+                    return self._html(network_page(mesh, self._session()))
+                if p == "/api/network":
+                    return self._json(200, mesh.network())
                 if p == "/api/questions":
-                    return self._json(200, {"questions": [{**qq, "status": mesh.status(qq["id"])} for qq in mesh.q.list()]})
+                    memo: dict = {}
+                    return self._json(200, {"questions": [{**qq, "status": mesh.status(qq["id"], memo)} for qq in mesh.q.list()]})
                 if p == "/terms":
                     return self._html(page("Terms", TERMS, nav_me=nav_me(self._session())))
                 if p == "/api/me":
@@ -434,8 +522,13 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
             if not rest:
                 return self._html(question_page(mesh, qrow, self._session()))
             if rest == "standing":
-                g = mesh.q.graph(qid)
-                return self._json(200, {**mesh.status(qid), "all": [asdict(c) for c in S.claims(g, mesh.ids, qid)]})
+                memo: dict = {}
+                return self._json(200, {**mesh.status(qid, memo), "all": [asdict(c) for c in mesh.claims(qid, memo)]})
+            if rest == "references":
+                memo = {}
+                return self._json(200, {"rests_on": [{"claim": c.id, "code": c.code, "level": c.level, "capped_by": c.capped_by, "rests_on": c.rests_on}
+                                                     for c in mesh.claims(qid, memo) if c.rests_on],
+                                        "outgoing": mesh.refs.outgoing(qid), "cited_by": mesh.refs.citing(qid)})
             if rest == "bundle.json":
                 b = mesh.q.graph(qid).export()
                 return self._send(200, json.dumps(b, ensure_ascii=False, separators=(",", ":")).encode(), "application/json",
@@ -443,6 +536,14 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
             if rest.startswith("api/graph"):
                 sub = rest[len("api/graph"):]
                 g = mesh.q.graph(qid)
+                if sub.strip("/") == "telemetry":           # a swarm's sidecar, as hypgraph's own server answers it
+                    tel = Path(str(g.path) + ".telemetry.jsonl") if getattr(g, "path", None) else None
+                    try:
+                        after, limit = int((q.get("after") or ["0"])[0]), min(int((q.get("limit") or ["2000"])[0]), 10000)
+                    except ValueError:
+                        return self._json(400, {"detail": "after and limit must be numbers"})
+                    evs, nxt = read_telemetry(tel, after, str((q.get("inv") or [""])[0]), limit) if tel and tel.is_file() else ([], after)
+                    return self._json(200, {"events": evs, "next": nxt, "source": tel.name if tel else "", "exists": bool(tel and tel.is_file())})
                 if sub.strip("/") == "stream":
                     if not streams.acquire(blocking=False):
                         return self._send(503, json.dumps({"detail": f"{mesh.max_streams} event streams are open; retry shortly"}).encode(),

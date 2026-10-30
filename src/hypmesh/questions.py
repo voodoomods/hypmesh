@@ -62,7 +62,7 @@ class Questions:
         return next((x for x in self.excluded if x in blob), "")
 
     def open(self, title: str, objective: str, *, domain: str = "", opened_by: str = "", hazard_reviewed: bool = False,
-             qid: str = "") -> dict:
+             qid: str = "", part_of: str = "") -> dict:
         if not hazard_reviewed:
             raise ValueError("a question is opened only after its hazard review; pass hazard_reviewed=True to say it was done")
         hit = self.hazard(title, objective, domain)
@@ -74,12 +74,15 @@ class Questions:
         rows = self._load()
         if any(q["id"] == qid for q in rows):
             raise ValueError(f"question {qid!r} already exists")
+        if part_of and not any(q["id"] == part_of for q in rows):
+            raise ValueError(f"no question {part_of!r} for this one to be part of")
         path = self.dir / f"{qid}.hypgraph"
         g = Graph(str(path), policy=POLICY)
         inv = g.author(CURATOR).investigation(title, objective, reviewers=[])
         g.close()
         row = {"id": qid, "title": title, "objective": objective, "domain": domain, "opened_by": opened_by,
-               "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "curator_inv": inv["id"], "state": "open"}
+               "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "curator_inv": inv["id"], "state": "open",
+               "part_of": part_of or ""}
         rows.append(row)
         self._save(rows)
         return row

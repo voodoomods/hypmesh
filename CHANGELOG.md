@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased: questions that rest on questions
+
+- **Pinned references between questions** (needs hypgraph ≥ 0.7.8). A claim in one question cites a claim of
+  another as a `source` with `record` (that question's URL) and `node`; the gate fills `version` and `hash` from the
+  live node (or checks them when given), refuses a reference to a withdrawn node, and indexes the reference
+  (`network.py`; a cache, `hypmesh network --rebuild` recomputes it from the records). A reference to another host is
+  taken as written and never fetched by the server.
+- **Standing across records.** A claim *rests on* the claims it cites by pinned reference: its level is capped at the
+  lowest of theirs (`capped_by`), it is **`at_risk`** when one fell or its pin stops matching, and a premise revised
+  since it was read is reported, not penalised. `own_level` keeps the uncapped level; reviewers are credited by it.
+- **`part_of`** between questions (`hypmesh question open --part-of`), the `/network` page (cytoscape), `/api/network`,
+  `/q/<id>/references`, a *rests on* column on every question page, and who cites a question in its header.
+
 ## 0.1.0a2 (2026-10-29)
 
 Running a public mesh behind a reverse proxy, and verified backups.
