@@ -11,20 +11,27 @@ to versions, refusals logged). The mesh adds the rules that need identity:
   board) when that identity is eligible; a review by the author's own identity stays whatever the record makes of
   it (official if the swarm listed that seat as a reviewer — it counts as L1, never as L2);
 - caps on open work: no more than N active, unreviewed claims per identity per question, and a writes-per-minute
-  ceiling per identity. Trust unlocks nothing here; the caps are the same for everyone."""
+  ceiling per identity. Trust unlocks nothing here; the caps are the same for everyone;
+- a source that pins a node of another question *of this mesh* is resolved here: the pin (version, hash) is
+  filled from the live node when the writer gave only record and node, checked against it when given, and refused
+  when the node is withdrawn; the reference is then indexed (network.py). A reference to another host is taken as
+  written and never fetched by the server (no server-side requests to writer-chosen URLs)."""
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional, Union
 
 from hypgraph import GraphError
 from hypgraph import derive as D
+from hypgraph.references import is_reference, verify_reference
 from hypgraph.server import dispatch
 
 from .identity import Identities, Identity
+from .network import References, question_of
 from .questions import CURATOR, INSTRUMENT, Questions
 
 OWN_ONLY = {"revise", "withdraw", "retract", "lease", "issue_work", "return_work", "accept_work", "rework", "cancel_work",
@@ -40,12 +47,14 @@ class Refusal(Exception):
 
 class Gate:
     def __init__(self, questions: Questions, ids: Identities, *, open_claims: int = 3, writes_per_minute: int = 120,
-                 instrument_token: str = ""):
+                 instrument_token: str = "", mesh_url: Union[str, Callable[[], str]] = "", refs: Optional[References] = None):
         self.q = questions
         self.ids = ids
         self.open_claims = open_claims
         self.writes_per_minute = writes_per_minute
         self.instrument_token = instrument_token
+        self._mesh_url = mesh_url                    # a callable: the mesh's base URL can be set after the gate is built
+        self.refs = refs
         self._recent: dict[str, deque] = defaultdict(deque)
         self._lock = threading.Lock()
 
@@ -92,8 +101,12 @@ class Gate:
                 self._cap(g, qid, who)
             if op == "review":
                 self._review(g, qid, who, author, body)
+            if op in ("create", "revise") and isinstance(body.get("fields"), dict) and body["fields"].get("record"):
+                self._reference(g, qid, body)
         status, out = dispatch(g, "POST", "/write", body=body, writable=True, allowed=allowed)
         if status == 200 and isinstance(out, dict) and out.get("id"):
+            if op in ("create", "revise") and self.refs is not None:
+                self._index(g, qid, out["id"])
             if op == "review":
                 # review() answers with the reviewed node; the review itself is the newest `reviews` edge by this author
                 edges = [e for e in out.get("in", []) if e.get("rel") == "reviews" and e.get("by") == author]
@@ -102,6 +115,59 @@ class Gate:
             else:
                 self.ids.record(qid, out["id"], str(body.get("type") or op), author, who)
         return status, out
+
+    @property
+    def mesh_url(self) -> str:
+        return self._mesh_url() if callable(self._mesh_url) else str(self._mesh_url or "")
+
+    def _reference(self, g, qid: str, body: dict) -> None:
+        """A source pinning a node of this mesh: fill or check the pin against the live node, refuse a fallen one."""
+        f = body["fields"]
+        if body.get("op") == "create" and str(body.get("type")) != "source":
+            return
+        target_q = question_of(self.mesh_url, str(f.get("record") or ""))
+        if target_q is None:
+            return                                   # another host: taken as written, hypgraph checks the shape
+        try:
+            g2 = self.q.graph(target_q)
+        except KeyError:
+            raise Refusal(404, f"no question {target_q!r} on this mesh to cite")
+        try:
+            nid = g2.resolve(str(f.get("node") or ""), "")
+        except Exception as e:
+            raise Refusal(404, f"no node {f.get('node')!r} in question {target_q}: {e}")
+        life = g2.state(nid).get("lifecycle", "active")
+        if life != "active":
+            raise Refusal(409, f"{target_q}/{nid} is {life}; cite what stands, or cite the node that replaced it")
+        pin = g2.pin(nid, f"{self.mesh_url}/q/{target_q}")
+        if f.get("version") in (None, "", 0) and not f.get("hash"):
+            for k, v in pin.items():                  # the writer named the node; the mesh pins the version it reads now
+                if f.get(k) in (None, "", [], {}):
+                    f[k] = v
+            f["record"], f["node"] = pin["record"], nid   # the resolved id, not a display code
+            return
+
+        def local(url: str) -> dict:                 # verify against our own copy, never over the network
+            path = url.split("/api/graph", 1)[1].partition("?")[0]
+            status, obj = dispatch(g2, "GET", path, query={"history": ["1"]})
+            if status != 200:
+                raise KeyError(obj)
+            return json.loads(json.dumps(obj, default=str))
+        v = verify_reference({**f, "record": pin["record"], "node": nid}, fetch=local)
+        if not v.get("ok"):
+            raise Refusal(409, f"the pin does not match {target_q}/{nid}: {v.get('problem')}")
+        f["record"], f["node"] = pin["record"], nid
+
+    def _index(self, g, qid: str, nid: str) -> None:
+        try:
+            n = g.get(nid)
+        except KeyError:
+            return
+        if n.get("type") != "source" or not is_reference(n.get("body") or {}):
+            return
+        b = n["body"]
+        self.refs.put(qid, nid, record=b["record"], to_question=question_of(self.mesh_url, b["record"]) or "",
+                      node=b["node"], version=int(b["version"]), hash=b["hash"])
 
     def _own(self, g, qid: str, who: Identity, body: dict) -> None:
         target = body.get("node") or body.get("order") or body.get("inv") or ""

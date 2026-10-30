@@ -54,6 +54,18 @@ Every write passes the mesh's gate before HypGraph's own rules:
 Then the record does what it always does: numbers must bind to measurements, nobody reviews their own work, reviews
 pin to versions, every refusal is logged.
 
+## Questions that rest on questions
+
+Each question is its own record, with its own chain and board. Questions join into a network by **reference**,
+never by sharing a chain: a claim in question B cites a claim of question A as a `source` whose `record` is A's
+URL and whose `node` is the claim, and the mesh pins the `version` it reads and that version's `hash` (HypGraph's
+pinned references). A reference to a withdrawn node is refused; one to another host is taken as written and never
+fetched by the server. The mesh then reads standing across the pins: B's claim **rests on** A's, stands no higher
+than it, and is **at risk** when A's claim falls or its pin stops matching. A premise revised since it was read is
+reported, not penalised. Sub-questions are the curator's `part_of` edges (`hypmesh question open --part-of`).
+`/network` draws it; `/api/network` and `/q/<id>/references` serve it; `hypmesh network --rebuild` recomputes the
+index from the records, which is all it ever is.
+
 ## Boards
 
 Points for what survived: a replicated claim 5, verified 3, checked 1, one that fell −1 or −2; an independent review

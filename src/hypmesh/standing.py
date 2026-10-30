@@ -11,7 +11,12 @@ A claim's mesh standing, from the record's own derived review state plus who the
                 reproduced the computation the claim rests on
 
 "Independent" means another ORCID; "another organisation" means another org, or another unaffiliated person.
-A question is solved when a claim in it reaches L3. The boards count what survived, not what was written."""
+A question is solved when a claim in it reaches L3. The boards count what survived, not what was written.
+
+Across questions (network.py): a claim that cites a pinned reference to a claim of another question of this mesh
+*rests on* it. A chain is as strong as its weakest link, so the claim's level is capped at the lowest level of the
+claims it rests on; if one of them fell (withdrawn, contested), or its pinned version no longer matches, the
+citing claim is ``at_risk``. A reference that has been revised since it was read is reported, not penalised."""
 from __future__ import annotations
 
 from collections import Counter, defaultdict
@@ -20,12 +25,14 @@ from typing import Optional
 
 from hypgraph import Graph
 from hypgraph import derive as D
+from hypgraph.references import body_hash
 
 from .identity import Identities, Identity
 from .questions import INSTRUMENT
 
-LEVELS = ("withdrawn", "contested", "L0", "L1", "L2", "L3")
-WEIGHT = {"L3": 5, "L2": 3, "L1": 1, "L0": 0, "contested": -1, "withdrawn": -2}
+LEVELS = ("withdrawn", "contested", "at_risk", "L0", "L1", "L2", "L3")
+WEIGHT = {"L3": 5, "L2": 3, "L1": 1, "L0": 0, "at_risk": -1, "contested": -1, "withdrawn": -2}
+_L = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}
 
 
 @dataclass
@@ -42,6 +49,9 @@ class ClaimStanding:
     orgs: list[str]                    # distinct org keys among independent positives
     reproduced: bool
     record_review: str                 # hypgraph's own review state for the current version
+    rests_on: list = field(default_factory=list)     # [{question, node, code, level, revised, withdrawn, hash_ok}]
+    own_level: str = ""                # the level before the cross-question cap (equal to level when uncapped)
+    capped_by: str = ""                # "question/code" of the weakest premise, when the cap bit
 
 
 def _reviews_of(s, claim: str) -> list[dict]:
@@ -83,7 +93,49 @@ POSITIVE = {"checked", "replicated"}
 NEGATIVE = {"objection", "contested"}
 
 
-def claims(g: Graph, ids: Identities, qid: str) -> list[ClaimStanding]:
+def _rests_on(g, s, claim: str, qid: str, ids: Identities, questions, refs, memo: dict) -> list[dict]:
+    """The claims of other questions this claim cites by pinned reference, with their standing as it is now."""
+    out = []
+    for e in s.out.get(claim, []):
+        if e["rel"] != "cites":
+            continue
+        src = s.nodes.get(e["dst"]) or {}
+        b = src.get("body") or {}
+        if src.get("type") != "source" or not b.get("record") or not b.get("hash"):
+            continue
+        row = refs.get(qid, e["dst"]) if refs is not None else None
+        tq = (row or {}).get("to_question") or ""
+        if not tq or tq == qid:
+            continue
+        gone = {"question": tq, "node": b["node"], "code": "", "level": "", "revised": False, "withdrawn": True, "hash_ok": False}
+        try:
+            g2 = questions.graph(tq)
+        except KeyError:
+            out.append(gone)
+            continue
+        s2 = g2.snapshot()
+        n2 = s2.nodes.get(b["node"])
+        if n2 is None:
+            out.append(gone)
+            continue
+        pinned = next((v for v in s2.versions.get(b["node"], []) if int(v["v"]) == int(b["version"])), None)
+        hash_ok = bool(pinned) and body_hash(pinned["body"]) == b["hash"]
+        level = ""
+        if n2.get("type") == "claim":
+            level = next((c.level for c in claims(g2, ids, tq, questions=questions, refs=refs, _memo=memo) if c.id == b["node"]), "")
+        out.append({"question": tq, "node": b["node"], "code": n2.get("code", ""), "level": level,
+                    "revised": int(n2.get("v", 1)) > int(b["version"]),
+                    "withdrawn": D.lifecycle(s2, b["node"]) != "active", "hash_ok": hash_ok})
+    return out
+
+
+def claims(g: Graph, ids: Identities, qid: str, *, questions=None, refs=None, _memo: Optional[dict] = None) -> list[ClaimStanding]:
+    """Every claim's standing in ``qid``. With ``questions`` and ``refs`` the cross-question rule applies; ``_memo``
+    shares the work across questions (and stops a cycle of references from recursing)."""
+    memo = {} if _memo is None else _memo
+    if qid in memo:
+        return memo[qid]
+    memo[qid] = []                                   # a cycle reads the question it is inside as "no claims yet"
     s = g.snapshot()
     out = []
     for nid, n in s.nodes.items():
@@ -115,16 +167,27 @@ def claims(g: Graph, ids: Identities, qid: str) -> list[ClaimStanding]:
             level = "L1"
         else:
             level = "L0"
+        own, capped_by = level, ""
+        rests = _rests_on(g, s, nid, qid, ids, questions, refs, memo) if questions is not None else []
+        if life == "active":
+            for r in rests:
+                if r["withdrawn"] or not r["hash_ok"] or r["level"] in ("withdrawn", "contested", "at_risk"):
+                    level, capped_by = "at_risk", f"{r['question']}/{r['code'] or r['node']}"
+                    break
+                if r["level"] in _L and level in _L and _L[r["level"]] < _L[level]:
+                    level, capped_by = r["level"], f"{r['question']}/{r['code'] or r['node']}"
         out.append(ClaimStanding(nid, n.get("code", ""), n.get("inv", ""), (n.get("body") or {}).get("statement", ""), level,
                                  owner.orcid if owner else None, owner.org_key if owner else "",
-                                 sum(1 for r in reviews if r["verdict"] in POSITIVE), independent, orgs, reproduced, rr))
+                                 sum(1 for r in reviews if r["verdict"] in POSITIVE), independent, orgs, reproduced, rr,
+                                 rests, own, capped_by))
     order = {lv: i for i, lv in enumerate(reversed(LEVELS))}
     out.sort(key=lambda c: (order.get(c.level, 9), c.code))
+    memo[qid] = out
     return out
 
 
-def question_status(g: Graph, ids: Identities, qid: str) -> dict:
-    cs = claims(g, ids, qid)
+def question_status(g: Graph, ids: Identities, qid: str, *, questions=None, refs=None, _memo: Optional[dict] = None) -> dict:
+    cs = claims(g, ids, qid, questions=questions, refs=refs, _memo=_memo)
     best = next((c.level for c in cs if c.level.startswith("L")), None)
     counts = Counter(c.level for c in cs)
     return {"solved": any(c.level == "L3" for c in cs), "best": best, "claims": len(cs), "by_level": dict(counts),
@@ -172,9 +235,10 @@ def eligible_reviewer(scores: dict[str, Score], orcid: str) -> tuple[bool, str]:
     return True, ""
 
 
-def boards(questions, ids: Identities) -> dict[str, Score]:
+def boards(questions, ids: Identities, refs=None) -> dict[str, Score]:
     """Every agent, researcher and organisation with a row, from every question's record and the ledger."""
     scores: dict[str, Score] = {}
+    memo: dict = {}
 
     def sc(key: str, name: str, kind: str) -> Score:
         if key not in scores:
@@ -196,7 +260,7 @@ def boards(questions, ids: Identities) -> dict[str, Score]:
             g = questions.graph(qid)
         except KeyError:
             continue
-        cs = claims(g, ids, qid)
+        cs = claims(g, ids, qid, questions=questions, refs=refs, _memo=memo)
         by_id = {c.id: c for c in cs}
         for c in cs:
             owner = ids.owner(qid, c.id)
@@ -206,8 +270,8 @@ def boards(questions, ids: Identities) -> dict[str, Score]:
                 who = ids.owner(qid, r["review"])
                 if not who:
                     continue
-                stood = c.level in ("L1", "L2", "L3")
-                fell = r["verdict"] in POSITIVE and c.level in ("withdrawn", "contested")
+                stood = c.own_level in ("L1", "L2", "L3")          # a reviewer answers for the claim, not its premises
+                fell = r["verdict"] in POSITIVE and c.own_level in ("withdrawn", "contested")
                 def bump(x, stood=stood, fell=fell):
                     x.reviews_given += 1
                     x.reviews_stood += 1 if stood else 0

@@ -80,6 +80,27 @@ that already talks to a served record. Identity is the addition: ORCID sign-in o
 organisation vouches for ORCIDs; a ledger attributes every node to the identity that wrote it, without rewriting the
 author names a swarm uses for its seats.
 
+## 5. One record, or one graph? (2026-10-29)
+
+**A record stays one trust boundary.** One `.hypgraph` file is one hash chain, one policy, one board, one owner.
+Everything HypGraph derives is computed inside that boundary from events it can verify. Pouring every question into
+one graph would give strangers one chain and one write lock, and nesting records would make a parent's integrity
+depend on children it does not control. So a question is a node of the bigger graph by *reference*: a `source`
+that pins the record URL, the node, the version read and that version's hash (hypgraph.references, 0.7.8).
+
+**Where each layer lives.** HypGraph knows how to pin and how to verify a pin against a served record; any host can
+build a network from records that way. The mesh, which holds every record, does what one record cannot: it fills
+the pin from the live node at write time, refuses a reference to a withdrawn node, keeps an index of who cites what
+(a cache, rebuilt from the records), and derives standing across records. A reference to a record on another host
+is taken as written and never fetched by the server: no server-side requests to writer-chosen URLs.
+
+**The rule across records.** A chain is as strong as its weakest link: a claim's level is capped at the lowest level
+of the claims it rests on, and it is `at_risk` when one of them fell or its pin no longer matches. A reviewer who
+verified the citing claim is credited for that claim as reviewed (`own_level`), not for its premises — they did not
+review those. A premise revised since it was read is reported, not penalised: what was read still stands as read.
+Sub-questions are the curator's `part_of` edges; `motivated_by` and `alternative_to` between questions can follow the
+same way when a question needs them.
+
 ## What a public mesh still needs before the doors open
 
 - A hosted instrument with budgets and HypDMZ sandboxes behind it.

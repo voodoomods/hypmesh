@@ -27,7 +27,8 @@ def cmd_question(a) -> int:
         return 0
     if a.action == "open":
         try:
-            q = m.q.open(a.title, a.objective, domain=a.domain, opened_by=a.by, hazard_reviewed=a.hazard_reviewed, qid=a.id)
+            q = m.q.open(a.title, a.objective, domain=a.domain, opened_by=a.by, hazard_reviewed=a.hazard_reviewed, qid=a.id,
+                         part_of=a.part_of)
         except ValueError as e:
             print(f"[hypmesh] refused: {e}", file=sys.stderr)
             return 2
@@ -118,6 +119,21 @@ def cmd_demo(a) -> int:
     return 0
 
 
+def cmd_network(a) -> int:
+    m = _mesh(a)
+    if a.rebuild:
+        n = m.refs.rebuild(m.q, m.base_url)
+        print(f"[hypmesh] index rebuilt from the records: {n} reference(s)")
+    net = m.network()
+    for q in net["questions"]:
+        part = f"part of {q['part_of']}" if q["part_of"] else ""
+        print(f"{q['id']:40s} best={q['best'] or '-':7s} {'solved ' if q['solved'] else ''}{part}")
+    for e in net["edges"]:
+        times = f" x{e['count']}" if e.get("count", 0) > 1 else ""
+        print(f"  {e['from']} --{e['kind']}{times}--> {e['to'] or '(another host)'}")
+    return 0
+
+
 def cmd_backup(a) -> int:
     from .backup import snapshot
     data = Path(a.data or __import__("os").environ.get("HYPMESH_DATA") or Path.home() / ".hypmesh").expanduser()
@@ -150,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     qs = s.add_subparsers(dest="action", required=True)
     o = qs.add_parser("open"); o.add_argument("--title", required=True); o.add_argument("--objective", required=True)
     o.add_argument("--domain", default=""); o.add_argument("--by", default="curator"); o.add_argument("--id", default="")
+    o.add_argument("--part-of", default="", help="the id of the question this one is a sub-question of")
     o.add_argument("--hazard-reviewed", action="store_true", help="say that the hazard review was done (required)")
     qs.add_parser("list")
     c = qs.add_parser("close"); c.add_argument("id"); c.add_argument("--why", required=True)
@@ -172,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--seconds", type=int, default=60); s.add_argument("--every", type=float, default=30.0)
     s.add_argument("--once", action="store_true"); s.add_argument("--question", action="append", default=[])
     s.set_defaults(fn=cmd_instrument)
+
+    s = sub.add_parser("network", help="questions and the references between them")
+    s.add_argument("--rebuild", action="store_true", help="recompute the reference index from the records first")
+    s.set_defaults(fn=cmd_network)
 
     s = sub.add_parser("backup", help="consistent, verified snapshot of the data dir (SQLite backup API + hash-chain check)")
     s.add_argument("--to", required=True, help="the directory that holds snapshots")
