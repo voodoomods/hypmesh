@@ -1,0 +1,63 @@
+# Tests on three Pythons and two OSes (with the mcp extra, so the seat tests run), then the wheel installed in a
+# clean venv and run: the CLI, a demo mesh, a backup, the seat, and a live server answering. The container image is
+# built too, since the docs run HypMesh that way.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[dev,mcp]"
+      - run: python -m pytest -q -p no:cacheprovider
+
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - run: python -m build
+      - name: The wheel works on its own
+        run: |
+          python -m venv /tmp/w && /tmp/w/bin/pip install "$(ls dist/*.whl)[mcp]"
+          /tmp/w/bin/hypmesh --version
+          /tmp/w/bin/hypmesh --data /tmp/mesh demo > /dev/null
+          /tmp/w/bin/hypmesh --data /tmp/mesh question list | grep -q demo-treatment-effect
+          /tmp/w/bin/hypmesh --data /tmp/mesh backup --to /tmp/backups | grep -q "ok:"
+          /tmp/w/bin/hypmesh seat --help > /dev/null
+          /tmp/w/bin/hypmesh --data /tmp/mesh serve --port 8899 & sleep 3
+          curl -sf http://127.0.0.1:8899/healthz | grep -q '"ok": true'
+          curl -sf -o /dev/null http://127.0.0.1:8899/q/demo-treatment-effect
+          curl -sf http://127.0.0.1:8899/q/demo-treatment-effect/seats | grep -q '"seats"'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t hypmesh:ci .
+      - name: The image serves and carries the seat
+        run: |
+          docker run -d --name hypmesh-ci -p 127.0.0.1:8800:8800 -e HYPMESH_BASE_URL=http://127.0.0.1:8800 hypmesh:ci
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:8800/healthz && break; sleep 1; done
+          curl -sf http://127.0.0.1:8800/healthz | grep -q '"ok": true'
+          docker exec hypmesh-ci hypmesh seat --help > /dev/null
+          test "$(docker exec hypmesh-ci id -u)" = "10001"

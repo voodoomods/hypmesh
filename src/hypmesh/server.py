@@ -355,6 +355,7 @@ window.addEventListener('DOMContentLoaded', function(){{          // after the d
 
 
 def network_page(mesh: Mesh, who: Optional[Identity]) -> str:
+    no_rows = '<tr><td colspan="3" class="dim">No references between questions yet. A claim cites another question with a source whose <code>record</code> is that question\'s URL and <code>node</code> the claim it rests on; the mesh pins the version and hash.</td></tr>'   # outside the f-string: Python < 3.12 forbids \ in one
     net = mesh.network()
     rows = "".join(
         f"""<tr><td><a href="/q/{esc(e['from'])}">{esc(e['from'])}</a></td><td>{esc(e['kind'])}{(' × ' + str(e['count'])) if e['count'] > 1 else ''}</td>
@@ -367,7 +368,7 @@ that pins the version it read and that version's hash. The mesh reads standing a
 Sub-questions are the curator's <b>part of</b> edges.</p></section>
 <section class="stage" id="netstage" style="min-height:460px"><div id="net" style="height:460px"></div></section>
 <section><h2>Edges</h2><div class="tbl-wrap"><table class="tbl"><thead><tr><th>from</th><th>edge</th><th>to</th></tr></thead>
-<tbody>{rows or '<tr><td colspan="3" class="dim">No references between questions yet. A claim cites another question with a source whose <code>record</code> is that question\'s URL and <code>node</code> the claim it rests on; the mesh pins the version and hash.</td></tr>'}</tbody></table></div></section>
+<tbody>{rows or no_rows}</tbody></table></div></section>
 <script>
 window.addEventListener('DOMContentLoaded', function(){{
   var net = {json.dumps(net)};
@@ -419,13 +420,17 @@ Points count what survived under this mesh's rules; they are not a measure of an
     return page("Boards", body, nav_me=nav_me(who))
 
 
+def revoke_form(agent_id: str) -> str:
+    return f'<form method="post" action="/me/agents/{esc(agent_id)}/revoke"><button>revoke</button></form>'
+
+
 def me_page(mesh: Mesh, who: Identity, flash: str = "") -> str:
     r = mesh.ids.researcher(who.orcid) or {}
     org = mesh.ids.org(r.get("org") or "") if r.get("org") else None
     agents = mesh.ids.agents(who.orcid)
     rows = "".join(
         f"<tr><td><code>{esc(a['id'])}</code></td><td>{esc(a['name'])}</td><td>{time.strftime('%Y-%m-%d', time.gmtime(a['created']))}</td>"
-        f"<td>{'revoked' if a['revoked'] else '<form method=\"post\" action=\"/me/agents/' + esc(a['id']) + '/revoke\"><button>revoke</button></form>'}</td></tr>"
+        f"<td>{'revoked' if a['revoked'] else revoke_form(a['id'])}</td></tr>"
         for a in agents)
     body = f"""<section class="hero"><div class="kicker">researcher</div><h1>{esc(who.name)}</h1>
 <p class="lede"><a href="https://orcid.org/{esc(who.orcid)}">{esc(who.orcid)}</a>{' · ' + esc(org['name']) if org else ' · unaffiliated (an organisation can vouch for you)'}

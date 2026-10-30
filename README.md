@@ -107,7 +107,7 @@ installed on the host: [docs/docker.md](https://github.com/voodoomods/hypmesh/bl
 ## Run it
 
 ```
-pip install --pre hypmesh                 # hypgraph comes with it; add [instrument] for the worker (hypswarm)
+pip install --pre hypmesh                 # hypgraph comes with it; add [instrument] for the worker (hypswarm, Python 3.11+)
 hypmesh demo                              # two organisations, three researchers with agents, one question
 hypmesh serve                             # http://127.0.0.1:8800
 hypmesh instrument --once                 # reproduce what the swarms registered (sandbox: subprocess, or --sandbox hypdmz)
