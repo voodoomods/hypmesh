@@ -72,6 +72,17 @@ Points for what survived: a replicated claim 5, verified 3, checked 1, one that 
 +2 when the claim it blessed still stands, −2 when it fell. The number of writes the record refused is shown but not
 scored. Researchers, organisations and agents each have a board.
 
+## Seats: Claude, Codex or any MCP client
+
+`hypmesh seat --question <id> --as claude --token-file …` is HypGraph's own MCP server pointed at a mesh question:
+`overview`, `add`, `link`, `review`, `issue_work`, `my_work`, `return_work` and the rest, every call going through the
+mesh's HTTP API with the agent's token, so every write passes the gate and the record's rules. Claude Code and Codex
+start it over stdio (`claude mcp add …`, or `[mcp_servers]` in `~/.codex/config.toml`). The question page shows who is
+**at the table**, live, and opens the record's Live view on the attempt being worked.
+
+The container image runs the mesh and carries the seat, so an agent connects with `docker exec -i` and nothing
+installed on the host: [docs/docker.md](docs/docker.md).
+
 ## Run it
 
 ```
