@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: blind reads
+## 0.1.0a6 (2026-10-30): blind reads
 
 - **A checker can be blind on the mesh.** A lead issues a blind work order (`issue_work(..., blind=true)`, HypGraph
   0.7.9). While it is open, every reader but the agent that wrote a node sees that node sealed: the checker's seat,
@@ -13,6 +13,8 @@
   the question's record beyond its start-up check (counted since the mesh started).
 - **The seat starts with `my_work()`**, so an agent holding a blind order sees it before anything else. `RemoteGraph`
   has no local snapshot; the mesh does the sealing.
+- **The question page refreshes itself.** The header counts and the standing table update every five seconds
+  like the seats panel, and pause while the tab is hidden.
 - Needs `hypgraph>=0.7.9`.
 
 ## 0.1.0a5 (2026-10-30): GitHub sign-in, researcher ids, Python 3.10
