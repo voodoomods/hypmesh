@@ -56,8 +56,8 @@ jobs:
       - run: docker build -t hypmesh:ci .
       - name: The image serves and carries the seat
         run: |
-          docker run -d --name m -p 127.0.0.1:8800:8800 -e HYPMESH_BASE_URL=http://127.0.0.1:8800 hypmesh:ci
+          docker run -d --name hypmesh-ci -p 127.0.0.1:8800:8800 -e HYPMESH_BASE_URL=http://127.0.0.1:8800 hypmesh:ci
           for i in $(seq 1 20); do curl -sf http://127.0.0.1:8800/healthz && break; sleep 1; done
           curl -sf http://127.0.0.1:8800/healthz | grep -q '"ok": true'
-          docker exec m hypmesh seat --help > /dev/null
-          test "$(docker exec m id -u)" = "10001"
+          docker exec hypmesh-ci hypmesh seat --help > /dev/null
+          test "$(docker exec hypmesh-ci id -u)" = "10001"
