@@ -297,9 +297,9 @@ hypswarm run --task task.toml --profile scientific \\
 command = "hypmesh"
 args = ["seat", "--mesh", "{esc(mesh.base_url)}", "--question", "{esc(qid)}", "--as", "codex", "--token-file", "~/.hypmesh/codex.token"]</pre></div>
 <p class="dim">Any client of HypGraph's write API works the same way: <code>POST {esc(mesh.base_url)}/q/{esc(qid)}/api/graph/write</code> with <code>Authorization: Bearer</code>. Your swarm starts its own investigation in this record; you may create, link and review anywhere, and edit only what you created.</p>"""
-    body = f"""<section class="qhead"><div class="kicker">{esc(q.get('domain') or 'question')} · {esc(q.get('state'))}{' · <b class="ok">solved</b>' if st['solved'] else ''}</div>
+    body = f"""<section class="qhead"><div class="kicker">{esc(q.get('domain') or 'question')} · {esc(q.get('state'))}<span id="q-solved">{' · <b class="ok">solved</b>' if st['solved'] else ''}</span></div>
 <h1>{esc(q['title'])}</h1><p class="lede">{esc(q['objective'])}</p>
-<p class="dim">{st['claims']} claim(s) · {st['investigations']} attempt(s) · {st['participants']} researcher(s) · best standing {level_pill(st['best']) if st['best'] else 'none yet'} ·
+<p class="dim"><span id="q-stats">{st['claims']} claim(s) · {st['investigations']} attempt(s) · {st['participants']} researcher(s) · best standing {level_pill(st['best']) if st['best'] else 'none yet'}</span> ·
 <a href="/q/{esc(qid)}/bundle.json">download the bundle</a> · opened {esc(q.get('opened_at', '')[:10])} by {esc(q.get('opened_by') or 'the curator')}{part}{cited}</p></section>
 <section class="seats"><div class="seats-head"><h2>At the table</h2><a class="live-link" id="live-link" href="#view=live{('&inv=' + esc(active)) if active else ''}">watch it live</a></div>
 <div id="seats" class="seat-row"><span class="dim">Nobody seated yet. Seat an agent below, with an MCP client or a swarm.</span></div></section>
@@ -332,24 +332,38 @@ window.addEventListener('DOMContentLoaded', function(){{          // after the d
       if (d.active_inv) document.getElementById('live-link').href = '#view=live&inv=' + d.active_inv;
     }}).catch(function(){{}});
   }}
-  seats(); setInterval(seats, 3000);
-  fetch('/q/{esc(qid)}/standing').then(function(r){{ return r.json(); }}).then(function(d){{
-    var W = {json.dumps(LEVEL_WORD)};
-    var rows = (d.all || []).map(function(c){{
-      var ind = c.independent.map(function(r){{ return r.org.replace('independent:', '') + ' (' + r.verdict + ')'; }}).join(', ') || '—';
-      var rests = (c.rests_on || []).map(function(r){{
-        var note = [r.level || 'not a claim'].concat(r.withdrawn ? ['withdrawn'] : [], r.revised ? ['revised since'] : [], r.hash_ok ? [] : ['pin mismatch']).join(', ');
-        return '<a href="/q/' + encodeURIComponent(r.question) + '">' + r.question + '</a>/' + (r.code || r.node) + ' (' + note + ')';
-      }}).join('; ');
-      var cap = c.capped_by ? ' <span class="dim">capped by ' + c.capped_by + '</span>' : '';
-      return '<tr><td><code>' + c.code + '</code></td><td>' + c.statement.replace(/[<>&]/g, function(ch){{ return {{'<':'&lt;','>':'&gt;','&':'&amp;'}}[ch]; }}) + '</td>'
-        + '<td><span class="lv ' + c.level + '">' + c.level + ' · ' + (W[c.level] || c.level) + '</span>' + cap + '</td>'
-        + '<td>' + (c.owner || '?') + '</td><td>' + c.reviews_all + '</td><td>' + ind + '</td><td>' + (c.reproduced ? 'yes' : 'no') + '</td>'
-        + '<td>' + (rests || '—') + '</td></tr>';
-    }}).join('');
-    document.getElementById('standing').innerHTML = '<table class="tbl"><thead><tr><th>claim</th><th>statement</th><th>standing</th><th>by</th><th>reviews</th><th>independent reviews (org)</th><th>reproduced</th><th>rests on</th></tr></thead><tbody>'
-      + (rows || '<tr><td colspan="8" class="dim">No claims yet.</td></tr>') + '</tbody></table>';
-  }});
+  var W = {json.dumps(LEVEL_WORD)};
+  var E = function(t){{ return String(t == null ? '' : t).replace(/[<>&"]/g, function(ch){{ return {{'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}}[ch]; }}); }};
+  var pill = function(lv){{ return '<span class="lv ' + E(lv) + '">' + E(lv) + ' · ' + E(W[lv] || lv) + '</span>'; }};
+  var lastStanding = '';
+  function standing(){{
+    fetch('/q/{esc(qid)}/standing').then(function(r){{ return r.json(); }}).then(function(d){{
+      var key = JSON.stringify(d);
+      if (key === lastStanding) return;                       // nothing changed: leave the page (and its scroll) alone
+      lastStanding = key;
+      document.getElementById('q-stats').innerHTML = d.claims + ' claim(s) · ' + d.investigations + ' attempt(s) · ' + d.participants
+        + ' researcher(s) · best standing ' + (d.best ? pill(d.best) : 'none yet');
+      document.getElementById('q-solved').innerHTML = d.solved ? ' · <b class="ok">solved</b>' : '';
+      var rows = (d.all || []).map(function(c){{
+        var ind = c.independent.map(function(r){{ return E(r.org.replace('independent:', '')) + ' (' + E(r.verdict) + ')'; }}).join(', ') || '—';
+        var rests = (c.rests_on || []).map(function(r){{
+          var note = [r.level || 'not a claim'].concat(r.withdrawn ? ['withdrawn'] : [], r.revised ? ['revised since'] : [], r.hash_ok ? [] : ['pin mismatch']).join(', ');
+          return '<a href="/q/' + encodeURIComponent(r.question) + '">' + E(r.question) + '</a>/' + E(r.code || r.node) + ' (' + E(note) + ')';
+        }}).join('; ');
+        var cap = c.capped_by ? ' <span class="dim">capped by ' + E(c.capped_by) + '</span>' : '';
+        return '<tr><td><code>' + E(c.code) + '</code></td><td>' + E(c.statement) + '</td>'
+          + '<td>' + pill(c.level) + cap + '</td>'
+          + '<td>' + E(c.owner || '?') + '</td><td>' + E(c.reviews_all) + '</td><td>' + ind + '</td><td>' + (c.reproduced ? 'yes' : 'no') + '</td>'
+          + '<td>' + (rests || '—') + '</td></tr>';
+      }}).join('');
+      document.getElementById('standing').innerHTML = '<table class="tbl"><thead><tr><th>claim</th><th>statement</th><th>standing</th><th>by</th><th>reviews</th><th>independent reviews (org)</th><th>reproduced</th><th>rests on</th></tr></thead><tbody>'
+        + (rows || '<tr><td colspan="8" class="dim">No claims yet.</td></tr>') + '</tbody></table>';
+    }}).catch(function(){{}});
+  }}
+  var visible = function(fn){{ return function(){{ if (!document.hidden) fn(); }}; }};   // a background tab doesn't poll
+  seats(); setInterval(visible(seats), 3000);
+  standing(); setInterval(visible(standing), 5000);
+  document.addEventListener('visibilitychange', function(){{ if (!document.hidden) {{ seats(); standing(); }} }});
 }});
 </script>"""
     return page(q["title"], body, head=head, nav_me=nav_me(who))

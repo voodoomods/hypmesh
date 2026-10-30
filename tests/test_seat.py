@@ -120,6 +120,8 @@ def test_two_seats_at_the_table_and_the_live_panel(mesh):
         page = r.read().decode("utf-8")
     assert "At the table" in page and "hypmesh seat --mesh" in page and "[mcp_servers.hypmesh-x-vs-y]" in page
     assert f"#view=live&inv={inv}" in page                  # the live view follows the attempt being worked
+    assert 'id="q-stats"' in page and 'id="q-solved"' in page   # the header counts refresh live with the standing table
+    assert "setInterval(visible(standing), 5000)" in page and "setInterval(visible(seats), 3000)" in page
     with urllib.request.urlopen(f"{base}/q/x-vs-y/seats") as r:
         assert json.load(r)["active_inv"] == inv
     # a request without a token reads the record but takes no seat
