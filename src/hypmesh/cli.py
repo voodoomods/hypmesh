@@ -118,6 +118,23 @@ def cmd_demo(a) -> int:
     return 0
 
 
+def cmd_backup(a) -> int:
+    from .backup import snapshot
+    data = Path(a.data or __import__("os").environ.get("HYPMESH_DATA") or Path.home() / ".hypmesh").expanduser()
+    try:
+        r = snapshot(data, Path(a.to).expanduser(), keep=a.keep)
+    except (FileNotFoundError, OSError) as e:
+        print(f"[hypmesh] backup failed: {e}", file=sys.stderr)
+        return 1
+    for c in r["checks"]:
+        chain = (f" chain={'ok' if c['chain']['ok'] else 'BROKEN'} ({c['chain']['checked']} events)"
+                 + (f": {c['chain']['problem']}" if c["chain"].get("problem") else "")) if "chain" in c else ""
+        print(f"  {c['file']:50s} integrity={c['integrity']}{chain}")
+    print(f"[hypmesh] {'ok' if r['ok'] else 'FAILED'}: {r['snapshot']} ({r['files']} files)"
+          + (f"; pruned {len(r['pruned'])}" if r["pruned"] else ""))
+    return 0 if r["ok"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -155,6 +172,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--seconds", type=int, default=60); s.add_argument("--every", type=float, default=30.0)
     s.add_argument("--once", action="store_true"); s.add_argument("--question", action="append", default=[])
     s.set_defaults(fn=cmd_instrument)
+
+    s = sub.add_parser("backup", help="consistent, verified snapshot of the data dir (SQLite backup API + hash-chain check)")
+    s.add_argument("--to", required=True, help="the directory that holds snapshots")
+    s.add_argument("--keep", type=int, default=14, help="how many good snapshots to keep (0 = keep all)")
+    s.set_defaults(fn=cmd_backup)
 
     s = sub.add_parser("demo", help="two organisations, three researchers with agents, one question"); s.set_defaults(fn=cmd_demo)
 

@@ -1,0 +1,26 @@
+# HypMesh behind Caddy. Caddy gets and renews the TLS certificate (Let's Encrypt) on its own; the mesh listens on
+# loopback only. install.sh writes this file to /etc/caddy/Caddyfile with HYPMESH_DOMAIN filled in.
+{$HYPMESH_DOMAIN} {
+	request_body {
+		max_size 2MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# Event streams (/q/<id>/api/graph/stream) pass straight through: Caddy flushes text/event-stream at once.
+	reverse_proxy 127.0.0.1:8800 {
+		header_up X-Forwarded-Proto https
+	}
+
+	log {
+		output file /var/log/caddy/hypmesh.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+	}
+}
