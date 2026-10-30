@@ -11,6 +11,10 @@
     GET  /q/<id>/seats                      who is at the table: agents (MCP seats, swarms) seen at this question lately
     GET  /q/<id>/references                 what this question's claims rest on, and who cites it
 
+Blind work orders (hypgraph.blind): while one is open in a question, every reader but the agent that wrote a node
+sees it sealed, on every route that carries the record: the graph API and its stream, the standing table, the bundle.
+A blind order is refused for a seat that has already looked at the question's record.
+
 `hypswarm run --record-url https://<mesh>/q/<id>` works unchanged: the swarm's HttpRecord talks to
 /q/<id>/api/graph/* with its token in the Authorization header."""
 from __future__ import annotations
@@ -33,7 +37,8 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from hypgraph import GraphError
-from hypgraph.server import dispatch, read_telemetry
+from hypgraph import blind as B
+from hypgraph.server import read_telemetry
 from hypgraph.ui import static_dir
 
 from . import __version__
@@ -161,8 +166,32 @@ class Mesh:
                 row["last_action"] = action or row["last_action"]
             else:
                 row["reads"] += 1
+                if action not in self.GLANCES:
+                    row["looked"] = row.get("looked", 0) + 1
                 if not row["last_action"]:
                     row["last_action"] = action
+
+    # reads that don't show what others wrote: a seat's start-up check, resolving a code, its own orders
+    GLANCES = frozenset({"reads investigations", "reads resolve", "reads orders", "reads order", "reads the record"})
+
+    def keep_for(self, qid: str, who: Optional[Identity]):
+        """What a blind order never seals from this reader: the nodes its own agent token wrote. Anonymous: nothing."""
+        if who is None:
+            return lambda i, n: False
+        mine = self.ids.nodes_of_agent(qid, who.agent)
+        return lambda i, n: i in mine
+
+    def view(self, qid: str, who: Optional[Identity]) -> "B.View":
+        g = self.q.graph(qid)
+        s = g.snapshot()
+        if not any(w.sealing for w in B.windows(s)):
+            return B.View()
+        return B.view_for(s, self.keep_for(qid, who))
+
+    def looked(self, qid: str, author: str) -> int:
+        """How many times a seat writing as ``author`` has read this question's record (since the mesh started)."""
+        with self._seats_lock:
+            return sum(r.get("looked", 0) for (q, *_), r in self._seats.items() if q == qid and r["author"] == author)
 
     def active_inv(self, qid: str) -> str:
         """The investigation the latest seat activity is in (not the curator's question), or '' — what a live view of
@@ -225,6 +254,24 @@ class Mesh:
 
 
 # ── pages ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def sealed_rows(v: "B.View", x):
+    """Standing rows (dicts with a node ``id`` and its ``statement``) with sealed statements replaced, and the
+    numbers only the sealed material carries scrubbed from everything else."""
+    if not v:
+        return x
+
+    def walk(y):
+        if isinstance(y, list):
+            return [walk(z) for z in y]
+        if isinstance(y, dict):
+            out = {k: walk(z) for k, z in y.items()}
+            if out.get("id") in v.hide and "statement" in out:
+                out["statement"] = f"sealed until blind work order {v.hide[out['id']]} is returned"
+            return out
+        return y
+    return v.scrub(walk(x))
+
 
 def esc(s) -> str:
     return html.escape(str(s if s is not None else ""), quote=True)
@@ -657,13 +704,17 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                 return self._html(question_page(mesh, qrow, self._session()))
             if rest == "standing":
                 memo: dict = {}
-                return self._json(200, {**mesh.status(qid, memo), "all": [asdict(c) for c in mesh.claims(qid, memo)]})
+                out = {**mesh.status(qid, memo), "all": [asdict(c) for c in mesh.claims(qid, memo)]}
+                return self._json(200, sealed_rows(mesh.view(qid, self._reader()), out))
             if rest == "references":
                 memo = {}
                 return self._json(200, {"rests_on": [{"claim": c.id, "code": c.code, "level": c.level, "capped_by": c.capped_by, "rests_on": c.rests_on}
                                                      for c in mesh.claims(qid, memo) if c.rests_on],
                                         "outgoing": mesh.refs.outgoing(qid), "cited_by": mesh.refs.citing(qid)})
             if rest == "bundle.json":
+                v = mesh.view(qid, self._reader())
+                if v:
+                    return self._json(409, {"detail": v.message("the bundle"), "sealed": v.because()})
                 b = mesh.q.graph(qid).export()
                 return self._send(200, json.dumps(b, ensure_ascii=False, separators=(",", ":")).encode(), "application/json",
                                   {"Content-Disposition": f'attachment; filename="{qid}.bundle.json"'})
@@ -674,7 +725,11 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                 sub = rest[len("api/graph"):]
                 g = mesh.q.graph(qid)
                 self._seat(qid, "reads " + (sub.strip("/").split("/")[0] or "the record"))
+                keep = mesh.keep_for(qid, self._reader())
                 if sub.strip("/") == "telemetry":           # a swarm's sidecar, as hypgraph's own server answers it
+                    v = mesh.view(qid, self._reader())
+                    if v:                                   # tool calls and their arguments: sealed with the record
+                        return self._json(409, {"detail": v.message("telemetry"), "sealed": v.because()})
                     tel = Path(str(g.path) + ".telemetry.jsonl") if getattr(g, "path", None) else None
                     try:
                         after, limit = int((q.get("after") or ["0"])[0]), min(int((q.get("limit") or ["2000"])[0]), 10000)
@@ -687,14 +742,14 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                         return self._send(503, json.dumps({"detail": f"{mesh.max_streams} event streams are open; retry shortly"}).encode(),
                                           "application/json", {"Retry-After": "10"})
                     try:
-                        return self._stream(g, q)
+                        return self._stream(g, q, keep)
                     finally:
                         streams.release()
-                status, obj = dispatch(g, "GET", sub, query=q)
+                status, obj = B.dispatch(g, "GET", sub, query=q, keep=keep)
                 return self._json(status, obj)
             return self._json(404, {"detail": "no such route"})
 
-        def _stream(self, g, q: dict) -> None:
+        def _stream(self, g, q: dict, keep=lambda i, n: False) -> None:
             one = {k: v[0] for k, v in q.items()}
             inv = str(one.get("inv") or "")
             last = str(self.headers.get("Last-Event-ID") or "")
@@ -716,10 +771,14 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                 self.wfile.flush()
                 while True:
                     out = g.events(after=after, inv=inv, limit=500)
+                    s = g.snapshot()
+                    v = B.view_for(s, keep) if any(w.sealing for w in B.windows(s)) else B.View()
                     for e in out["events"]:
+                        e = v.apply(e)
                         self.wfile.write(f"id: {e['seq']}:{toff}\nevent: record\ndata: {json.dumps(e, ensure_ascii=False, default=str)}\n\n".encode())
                         after = int(e["seq"])
-                    rows, toff2 = read_telemetry(tel, toff, inv, 500) if tel and tel.is_file() else ([], toff)
+                    # telemetry carries tool arguments and results: held back while sealed, sent once the seal lifts
+                    rows, toff2 = read_telemetry(tel, toff, inv, 500) if tel and tel.is_file() and not v else ([], toff)
                     for t in rows:
                         self.wfile.write(f"id: {after}:{toff2}\nevent: telemetry\ndata: {json.dumps(t, ensure_ascii=False, default=str)}\n\n".encode())
                     toff = toff2
@@ -833,6 +892,16 @@ new accounts. Yours is {max(0, int(age))} days old.</p></section>"""), status=40
             except KeyError as e:
                 return self._json(404, {"detail": f"no question {e}"})
 
+        def _reader(self) -> Optional[Identity]:
+            """The agent behind this request's bearer token, or None (anonymous, a browser, a bad token)."""
+            token = self._bearer()
+            if not token:
+                return None
+            try:
+                return mesh.gate.identify(token)
+            except Refusal:
+                return None
+
         def _seat(self, qid: str, action: str, *, author: str = "", wrote: bool = False) -> None:
             """Note a seat at the table: a request with an agent token (and the seat's name, from X-HypMesh-Seat)."""
             token = self._bearer()
@@ -854,20 +923,29 @@ new accounts. Yours is {max(0, int(age))} days old.</p></section>"""), status=40
                 return self._json(404, {"detail": "no such route"})
             sub = rest[len("api/graph"):].strip("/")
             body = self._body()
+            who = self._reader()
             if sub == "write":
+                if body.get("op") == "issue_work" and body.get("blind"):
+                    assignee = str(body.get("assignee") or "").strip().lower()
+                    n = mesh.looked(qid, assignee)
+                    if n:
+                        return self._json(409, {"detail": f"{assignee} has already read this question's record ({n} read(s) "
+                                                          "since the mesh started), so a blind order can't keep anything "
+                                                          "from it. Issue the blind order to a seat before it starts, or to "
+                                                          "another seat name."})
                 try:
                     status, obj = mesh.gate.write(qid, self._bearer(), body)
                 except GraphError as e:
                     self._seat(qid, f"refused: {body.get('op')} {body.get('type') or ''}".strip(), author=str(body.get("author") or ""), wrote=True)
-                    return self._json(422, {"detail": str(e)})
+                    return self._json(422, {"detail": mesh.view(qid, who).scrub(str(e))})
                 what = f"{body.get('op')} {body.get('type') or ''}".strip()
                 code = obj.get("code") if isinstance(obj, dict) else ""
                 if status != 200:                    # the record refused it: shown as a refusal, not a write
                     what = "refused: " + what
                     code = ""
                 self._seat(qid, what + (f" {code}" if code else ""), author=str(body.get("author") or ""), wrote=True)
-                return self._json(status, obj)
-            status, obj = dispatch(mesh.q.graph(qid), "POST", "/" + sub, body=body)
+                return self._json(status, mesh.view(qid, who).apply(obj))
+            status, obj = B.dispatch(mesh.q.graph(qid), "POST", "/" + sub, body=body, keep=mesh.keep_for(qid, who))
             return self._json(status, obj)
 
     srv = ThreadingHTTPServer((host, port), H)

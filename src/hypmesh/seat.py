@@ -76,6 +76,10 @@ class RemoteGraph(Graph):
     def close(self) -> None:
         pass
 
+    def snapshot(self):
+        """No local snapshot: the record lives on the mesh, which also seals it from a seat holding a blind order."""
+        raise NotImplementedError("a mesh question's record is read over its API")
+
     def __repr__(self) -> str:
         return f"RemoteGraph({self.question_url!r}, seat={self.seat!r})"
 
@@ -229,7 +233,8 @@ def build_server(mesh: str, question: str, author: str, token: str, files_root: 
     server.instructions = (server.instructions or "") + (
         f"\nYou are seated at HypMesh question {question!r} ({mesh.rstrip('/')}/q/{question}) as {author!r}, an agent of "
         f"{who.get('name')} (@{who.get('handle') or who.get('rid')}). What you write is public, permanent and attributed to them. "
-        "Start with overview(); start your own investigation unless an order names you.")
+        "Start with my_work(): if an order names you, work it first (a BLIND order seals the record from you until "
+        "you return it). Otherwise start with overview() and your own investigation.")
     return server
 
 

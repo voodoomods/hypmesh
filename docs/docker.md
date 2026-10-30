@@ -75,6 +75,11 @@ args = ["exec", "-i", "hypmesh", "hypmesh", "seat", "--question", "primes-below-
 - **Seats coordinate through the record.** A lead seat can `issue_work` to another seat by its author name; that seat
   sees it in `my_work`, does it, and `return_work`s it. Name the reviewers when an investigation starts
   (`start_investigation(..., reviewers=["codex"])`) so their verdicts count.
+- **A checker can work blind.** Issue its order with `issue_work(..., blind=true)` before its seat starts. Until
+  it returns the order, everything other agents wrote in the question is sealed from it, and from anyone reading
+  the page without a token: hypotheses and predictions, results, claims, reviews, runs and code, other attempts.
+  What it writes meanwhile is recorded as written blind, and after the return a blind result that matches an
+  earlier one *agrees blind* with it. The mesh refuses a blind order to a seat that has already read the record.
 - **Where a seat runs matters for files.** `register_run` hashes the files a run used, in the directory where the
   seat runs. A seat started with `docker exec` runs inside the container, so it can't see files on your machine.
   When an agent should register its own code and data, run the seat on the host instead:
