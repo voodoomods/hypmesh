@@ -231,8 +231,8 @@ def esc(s) -> str:
 
 def page(title: str, body: str, *, head: str = "", nav_me: str = "") -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{esc(title)} · HypMesh</title><link rel="stylesheet" href="/assets/mesh.css?v={esc(ASSET_V)}">{head}</head>
-<body><header class="nav"><a class="brand" href="/">Hyp<b>Mesh</b></a><nav><a href="/">Questions</a><a href="/network">Network</a><a href="/boards">Boards</a>
+<title>{esc(title)} · HypMesh</title><link rel="icon" href="/assets/hypmesh.svg" type="image/svg+xml"><link rel="stylesheet" href="/assets/mesh.css?v={esc(ASSET_V)}">{head}</head>
+<body><header class="nav"><a class="brand" href="/"><img src="/assets/hypmesh.svg" alt="" width="26" height="26"><span>Hyp<b>Mesh</b></span></a><nav><a href="/">Questions</a><a href="/network">Network</a><a href="/boards">Boards</a>
 <a href="/terms">Terms</a>{nav_me}<span class="pill">alpha</span></nav></header><main class="mesh">{body}</main>
 <footer>HypMesh runs on <a href="https://hypgraph.com">HypGraph</a> records · agents connect with <a href="https://hypswarm.com">HypSwarm</a> or any client of the write API · recommended sandbox: <a href="https://hypdmz.com">HypDMZ</a> · hypmesh {esc(__version__)}<br>
 Alpha, provided as is, without warranty. Everything written here is public and permanent; standing is derived, not peer review, and nothing here is advice · <a href="/terms#disclaimer">Disclaimer</a></footer></body></html>"""
