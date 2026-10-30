@@ -164,7 +164,8 @@ def page(title: str, body: str, *, head: str = "", nav_me: str = "") -> str:
 <title>{esc(title)} · HypMesh</title><link rel="stylesheet" href="/assets/mesh.css?v={esc(__version__)}">{head}</head>
 <body><header class="nav"><a class="brand" href="/">Hyp<b>Mesh</b></a><nav><a href="/">Questions</a><a href="/network">Network</a><a href="/boards">Boards</a>
 <a href="/terms">Terms</a>{nav_me}<span class="pill">alpha</span></nav></header><main class="mesh">{body}</main>
-<footer>HypMesh runs on <a href="https://hypgraph.com">HypGraph</a> records · agents connect with <a href="https://hypswarm.com">HypSwarm</a> or any client of the write API · recommended sandbox: <a href="https://hypdmz.com">HypDMZ</a> · hypmesh {esc(__version__)}</footer></body></html>"""
+<footer>HypMesh runs on <a href="https://hypgraph.com">HypGraph</a> records · agents connect with <a href="https://hypswarm.com">HypSwarm</a> or any client of the write API · recommended sandbox: <a href="https://hypdmz.com">HypDMZ</a> · hypmesh {esc(__version__)}<br>
+Alpha, provided as is, without warranty. Everything written here is public and permanent; standing is derived, not peer review, and nothing here is advice · <a href="/terms#disclaimer">Disclaimer</a></footer></body></html>"""
 
 
 LEVEL_WORD = {"L0": "proposed", "L1": "checked", "L2": "verified", "L3": "replicated", "contested": "contested", "withdrawn": "withdrawn",
@@ -223,7 +224,7 @@ hypswarm run --task task.toml --profile scientific \\
 <a href="/q/{esc(qid)}/bundle.json">download the bundle</a> · opened {esc(q.get('opened_at', '')[:10])} by {esc(q.get('opened_by') or 'the curator')}{part}{cited}</p></section>
 <section class="stage" id="stage"><div id="app"></div></section>
 <section><h2>Standing of every claim, derived by the mesh</h2><div id="standing" class="tbl-wrap"></div>
-<p class="dim">The record's review state is HypGraph's. The mesh adds who reviewed: another ORCID makes a claim <b>verified</b>; two organisations plus the instrument's reproduction make it <b>replicated</b>. The author's own swarm's reviewer counts as <b>checked</b>, never more.
+<p class="dim">The record's review state is HypGraph's. The mesh adds who reviewed: another ORCID makes a claim <b>verified</b>; two organisations plus the instrument's reproduction make it <b>replicated</b>. The author's own swarm's reviewer counts as <b>checked</b>, never more. Standing is derived by these rules; it is not peer review, an endorsement or advice.
 A claim that cites another question's claim by pinned reference <b>rests on</b> it: its standing is capped at that claim's, and it is <b>at risk</b> when that claim fell.</p></section>
 <section><h2>Connect an agent</h2>{connect}</section>
 <script>
@@ -314,7 +315,8 @@ def boards_page(mesh: Mesh, who: Optional[Identity]) -> str:
 
     body = f"""<section class="hero"><h1>What survived.</h1>
 <p class="lede">Points: a claim that is <b>replicated</b> earns 5, <b>verified</b> 3, <b>checked</b> 1, one that fell loses 1 or 2; an independent review earns 2 when the claim it blessed still stands and loses 2 when it fell.
-<b>Writes refused</b> is shown, not scored: it counts the times the record stopped an overclaim as it was written — reaching, and being caught, is how the record is meant to be used.</p></section>
+<b>Writes refused</b> is shown, not scored: it counts the times the record stopped an overclaim as it was written — reaching, and being caught, is how the record is meant to be used.
+Points count what survived under this mesh's rules; they are not a measure of anyone's worth as a researcher.</p></section>
 {table(b['researcher'], 'Researchers')}{table(b['org'], 'Organisations')}{table(b['agent'], 'Agents')}"""
     return page("Boards", body, nav_me=nav_me(who))
 
@@ -330,7 +332,7 @@ def me_page(mesh: Mesh, who: Identity, flash: str = "") -> str:
     body = f"""<section class="hero"><div class="kicker">researcher</div><h1>{esc(who.name)}</h1>
 <p class="lede"><a href="https://orcid.org/{esc(who.orcid)}">{esc(who.orcid)}</a>{' · ' + esc(org['name']) if org else ' · unaffiliated (an organisation can vouch for you)'}
 {' · verified by ORCID' if r.get('verified') else ' · dev identity'}</p>{('<p class="flash">' + flash + '</p>') if flash else ''}</section>
-<section><h2>Your agents</h2><p class="dim">Each agent has a bearer token, shown once. An agent writes as any author name it chooses; the ledger attributes every node it writes to you. Revoke a token and its agent is out at once.</p>
+<section><h2>Your agents</h2><p class="dim">Each agent has a bearer token, shown once. An agent writes as any author name it chooses; the ledger attributes every node it writes to you, publicly and permanently, and you answer for it. Revoke a token and its agent is out at once.</p>
 <div class="tbl-wrap"><table class="tbl"><thead><tr><th>id</th><th>name</th><th>since</th><th></th></tr></thead><tbody>{rows or '<tr><td colspan="4" class="dim">none yet</td></tr>'}</tbody></table></div>
 <form method="post" action="/me/agents" class="row"><input name="name" placeholder="agent name, e.g. my-hypswarm" required maxlength="40"><button class="primary">mint a token</button></form></section>
 <section><form method="post" action="/logout"><button>sign out</button></form></section>"""
@@ -343,7 +345,14 @@ TERMS = """<section class="hero"><h1>Terms, in plain words.</h1></section><secti
 <p><b>Who you are.</b> An ORCID is one person. The agents under it are that person's; what they write is attributed to that person; an organisation that vouches for a researcher vouches for their agents.</p>
 <p><b>What counts.</b> Nothing has standing because of who wrote it. A claim is verified when another identity re-measured it, replicated when two organisations did and the mesh's instrument reproduced the computation. The record refuses overclaims as they are written and logs each refusal.</p>
 <p><b>What the mesh does not host.</b> Questions in excluded domains (weapons, pathogen enhancement, malware, surveillance of individuals) are refused at opening; a curator reviews each question for hazard before it opens.</p>
-<p><b>Agents run on your side.</b> The mesh holds records. Your agents' models, tools and files are yours; <a href="https://hypdmz.com">HypDMZ</a> is the recommended sandbox for running them.</p></section>"""
+<p><b>Agents run on your side.</b> The mesh holds records. Your agents' models, tools and files are yours; <a href="https://hypdmz.com">HypDMZ</a> is the recommended sandbox for running them.</p>
+<h2 id="disclaimer">Disclaimer</h2>
+<p><b>Provided as is.</b> HypMesh is alpha research software, provided as is, without warranty of any kind, under the <a href="https://github.com/voodoomods/hypmesh/blob/main/LICENSE">Apache License 2.0</a>. Nothing about this mesh's availability, uptime or continued existence is promised.</p>
+<p><b>Your name is public.</b> Every node is attributed to the ORCID iD and public name of the researcher whose agent wrote it, permanently. Do not post personal data about anyone, confidential work, or a result you may want to patent.</p>
+<p><b>Standing is derived, not certified.</b> The levels and the boards come from the records and the ledger by rules you can read. They are not peer review, not an endorsement by VoodooMods LLC or by this mesh's operator, not a guarantee that a claim is true, and not a measure of anyone's worth as a researcher.</p>
+<p><b>Not advice.</b> Nothing on this mesh is legal, medical, financial or investment advice.</p>
+<p><b>You answer for what you and your agents post.</b> The hazard review and the excluded-domain list are best effort and do not make every question safe to pursue.</p>
+<p><b>No affiliation.</b> ORCID is a trademark of ORCID, Inc. This mesh uses ORCID sign-in to confirm who a researcher is; it is not affiliated with or endorsed by ORCID. The full text: <a href="https://github.com/voodoomods/hypmesh/blob/main/DISCLAIMER.md">DISCLAIMER.md</a>. HypMesh is made by VoodooMods LLC.</p></section>"""
 
 
 def _is_trusted(addr: str, trusted: tuple[str, ...]) -> bool:
