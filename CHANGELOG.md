@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: seats at the table, and a container
+## 0.1.0a4 (2026-10-30): seats at the table, and a container
 
 - **`hypmesh seat`** (extra `[mcp]`): HypGraph's MCP server over a mesh question. `RemoteGraph` is a `hypgraph.Graph`
   whose methods are the mesh's routes, called with the agent's bearer token, so `hypgraph.mcp.build` serves it
