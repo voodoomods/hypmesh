@@ -126,3 +126,33 @@ def test_standing_table_hides_sealed_statements(mesh):
     rows = json.loads(body)["all"]
     assert status == 200 and rows and all(r["statement"].startswith("sealed until") for r in rows)
     assert "1229" not in body
+
+
+def test_the_public_question_list_hides_sealed_claims(mesh):
+    """/api/questions lists each question's top claims; an adversarial run read a sealed reading there with no token."""
+    m, base, t = mesh
+    c, inv, h1, rs1 = setup_lead(base, t)
+    c.create(author="claude", type="claim", inv=inv, fields={
+        "statement": "There are 1229 primes below 10,000.", "scope": "the integers below 10,000"},
+        links=[{"rel": "supports", "from": rs1, "why": "the sieve's count"}])
+    c.issue_work(author="claude", inv=inv, target="H1", assignee="codex", objective=OBJECTIVE, blind=True)
+    for token in ("", t["codex"]):
+        status, body = get(f"{base}/api/questions", token)
+        assert status == 200 and "1229" not in body and "sealed until" in body
+    assert "1229" in get(f"{base}/api/questions", t["claude"])[1]       # the agent that wrote it still reads it
+
+
+def test_a_sealed_node_cannot_be_cited_from_another_question(mesh):
+    """A source pinning another question's node copies its words; citing a sealed node from an unsealed question
+    would carry them out of the seal (the adversarial run read the reading back that way)."""
+    m, base, t = mesh
+    c, inv, h1, rs1 = setup_lead(base, t)
+    o = c.issue_work(author="claude", inv=inv, target="H1", assignee="codex", objective=OBJECTIVE, blind=True)
+    m.q.open("A second question", "Somewhere the checker can write.", hazard_reviewed=True, qid="other")
+    x = RemoteGraph(f"{base}/q/other", t["codex"], seat="codex")
+    inv2 = x.create(author="codex", type="investigation", fields={"title": "Elsewhere", "objective": "Cite things."})["id"]
+    with pytest.raises(GraphError, match="sealed while blind work order"):
+        x.create(author="codex", type="source", inv=inv2, fields={"record": f"{base}/q/primes", "node": rs1})
+    seat(base, t, "codex").return_work(author="codex", order=o["order"], note="Counted by trial division.")
+    src = x.create(author="codex", type="source", inv=inv2, fields={"record": f"{base}/q/primes", "node": rs1})
+    assert "1229" in json.dumps(src)                                   # returned: it can be cited

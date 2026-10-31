@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Union
 
 from hypgraph import GraphError
+from hypgraph import blind as B
 from hypgraph import derive as D
 from hypgraph.references import is_reference, verify_reference
 from hypgraph.server import dispatch
@@ -102,7 +103,7 @@ class Gate:
             if op == "review":
                 self._review(g, qid, who, author, body)
             if op in ("create", "revise") and isinstance(body.get("fields"), dict) and body["fields"].get("record"):
-                self._reference(g, qid, body)
+                self._reference(g, qid, body, who)
         status, out = dispatch(g, "POST", "/write", body=body, writable=True, allowed=allowed)
         if status == 200 and isinstance(out, dict) and out.get("id"):
             if op in ("create", "revise") and self.refs is not None:
@@ -120,8 +121,9 @@ class Gate:
     def mesh_url(self) -> str:
         return self._mesh_url() if callable(self._mesh_url) else str(self._mesh_url or "")
 
-    def _reference(self, g, qid: str, body: dict) -> None:
-        """A source pinning a node of this mesh: fill or check the pin against the live node, refuse a fallen one."""
+    def _reference(self, g, qid: str, body: dict, who: Identity) -> None:
+        """A source pinning a node of this mesh: fill or check the pin against the live node, refuse a fallen one, and
+        refuse one sealed from the writer (the pin would copy its words into a record that isn't sealed)."""
         f = body["fields"]
         if body.get("op") == "create" and str(body.get("type")) != "source":
             return
@@ -136,6 +138,13 @@ class Gate:
             nid = g2.resolve(str(f.get("node") or ""), "")
         except Exception as e:
             raise Refusal(404, f"no node {f.get('node')!r} in question {target_q}: {e}")
+        s2 = g2.snapshot()
+        if any(w.sealing for w in B.windows(s2)):
+            mine = self.ids.nodes_of_agent(target_q, who.agent)
+            v = B.view_for(s2, lambda i, n: i in mine)
+            if nid in v.hide:
+                raise Refusal(409, f"{target_q}/{s2.nodes[nid]['code'] or nid} is sealed while blind work order "
+                                   f"{v.hide[nid]} is open there; cite it once that order is returned")
         life = g2.state(nid).get("lifecycle", "active")
         if life != "active":
             raise Refusal(409, f"{target_q}/{nid} is {life}; cite what stands, or cite the node that replaced it")

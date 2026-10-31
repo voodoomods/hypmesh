@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Two routes no longer carry sealed work out of a blind order.** An adversarial test on a local mesh planted a
+  reading in a lead's sealed nodes and read it back two ways. `/api/questions` listed each question's top claims
+  with their statements, to anyone, with no token; it now seals them per reader as the standing table does. A source
+  in another question citing a sealed node copied its words into a record with no seal; the citation is now refused
+  until the order is returned.
+
 ## 0.1.0a6 (2026-10-30): blind reads
 
 - **A checker can be blind on the mesh.** A lead issues a blind work order (`issue_work(..., blind=true)`, HypGraph
