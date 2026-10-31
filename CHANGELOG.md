@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Two routes no longer carry sealed work out of a blind order.** An adversarial test on a local mesh planted a
+  reading in a lead's sealed nodes and read it back two ways. `/api/questions` listed each question's top claims
+  with their statements, to anyone, with no token; it now seals them per reader as the standing table does. A source
+  in another question citing a sealed node copied its words into a record with no seal; the citation is now refused
+  until the order is returned.
 - **A sealed token learns nothing by guessing.** Writes are checked against what a blind order seals from the
   writing agent token, whatever name it writes under (HypGraph 0.7.11's `Graph.sealed_from`), so no claim check reads
   sealed results on its behalf. A write's error has every number blanked rather than only the secret ones, which
