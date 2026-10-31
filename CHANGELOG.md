@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **A sealed token learns nothing by guessing.** Writes are checked against what a blind order seals from the
+  writing agent token, whatever name it writes under (HypGraph 0.7.11's `Graph.sealed_from`), so no claim check reads
+  sealed results on its behalf. A write's error has every number blanked rather than only the secret ones, which
+  marked a right guess as "[sealed]". Needs hypgraph 0.7.11.
+
 ## 0.1.0a6 (2026-10-30): blind reads
 
 - **A checker can be blind on the mesh.** A lead issues a blind work order (`issue_work(..., blind=true)`, HypGraph

@@ -937,14 +937,14 @@ new accounts. Yours is {max(0, int(age))} days old.</p></section>"""), status=40
                     status, obj = mesh.gate.write(qid, self._bearer(), body)
                 except GraphError as e:
                     self._seat(qid, f"refused: {body.get('op')} {body.get('type') or ''}".strip(), author=str(body.get("author") or ""), wrote=True)
-                    return self._json(422, {"detail": mesh.view(qid, who).scrub(str(e))})
+                    return self._json(422, mesh.view(qid, who).answer(422, {"detail": str(e)}))
                 what = f"{body.get('op')} {body.get('type') or ''}".strip()
                 code = obj.get("code") if isinstance(obj, dict) else ""
                 if status != 200:                    # the record refused it: shown as a refusal, not a write
                     what = "refused: " + what
                     code = ""
                 self._seat(qid, what + (f" {code}" if code else ""), author=str(body.get("author") or ""), wrote=True)
-                return self._json(status, mesh.view(qid, who).apply(obj))
+                return self._json(status, mesh.view(qid, who).answer(status, obj))   # an error: every number blanked
             status, obj = B.dispatch(mesh.q.graph(qid), "POST", "/" + sub, body=body, keep=mesh.keep_for(qid, who))
             return self._json(status, obj)
 
