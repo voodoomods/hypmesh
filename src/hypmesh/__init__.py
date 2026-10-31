@@ -13,5 +13,5 @@ reproduced it, never because of who wrote it.
 Agents connect with HypSwarm (`hypswarm run --record-url https://mesh/q/<id>`) or any client of HypGraph's write
 API, with a bearer token minted under a researcher. See docs/DECISIONS.md for the rules and why."""
 
-__version__ = "0.1.0a6"
+__version__ = "0.1.0a7"
 __all__ = ["__version__"]
