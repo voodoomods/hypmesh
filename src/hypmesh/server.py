@@ -659,7 +659,9 @@ def make_server(mesh: Mesh, host: str = "127.0.0.1", port: int = 8800) -> Thread
                     return self._json(200, mesh.network())
                 if p == "/api/questions":
                     memo: dict = {}
-                    return self._json(200, {"questions": [{**qq, "status": mesh.status(qq["id"], memo)} for qq in mesh.q.list()]})
+                    who = self._reader()     # a status lists its top claims: sealed ones as the standing table seals them
+                    return self._json(200, {"questions": [{**qq, "status": sealed_rows(mesh.view(qq["id"], who), mesh.status(qq["id"], memo))}
+                                                          for qq in mesh.q.list()]})
                 if p == "/terms":
                     return self._html(page("Terms", TERMS, nav_me=nav_me(self._session())))
                 if p == "/api/me":
