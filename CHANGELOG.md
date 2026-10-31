@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0a7 (2026-10-30): the seal holds against guessing
 
 - **Two routes no longer carry sealed work out of a blind order.** An adversarial test on a local mesh planted a
   reading in a lead's sealed nodes and read it back two ways. `/api/questions` listed each question's top claims
