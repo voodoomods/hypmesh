@@ -104,7 +104,8 @@ class Gate:
                 self._review(g, qid, who, author, body)
             if op in ("create", "revise") and isinstance(body.get("fields"), dict) and body["fields"].get("record"):
                 self._reference(g, qid, body, who)
-        status, out = dispatch(g, "POST", "/write", body=body, writable=True, allowed=allowed)
+        with g.sealed_from(self._sealed_from(g, qid, who)):
+            status, out = dispatch(g, "POST", "/write", body=body, writable=True, allowed=allowed)
         if status == 200 and isinstance(out, dict) and out.get("id"):
             if op in ("create", "revise") and self.refs is not None:
                 self._index(g, qid, out["id"])
@@ -116,6 +117,17 @@ class Gate:
             else:
                 self.ids.record(qid, out["id"], str(body.get("type") or op), author, who)
         return status, out
+
+    def _sealed_from(self, g, qid: str, who: Identity) -> dict:
+        """What a blind order seals from this agent token, whatever name it writes under: no check may read it on the
+        token's behalf (hypgraph's Graph.sealed_from). The instrument reproduces what is filed; it isn't a reader."""
+        if who.agent == "instrument":
+            return {}
+        s = g.snapshot()
+        if not any(w.sealing for w in B.windows(s)):
+            return {}
+        mine = self.ids.nodes_of_agent(qid, who.agent)
+        return B.view_for(s, lambda i, n: i in mine).hide
 
     @property
     def mesh_url(self) -> str:

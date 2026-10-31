@@ -156,3 +156,35 @@ def test_a_sealed_node_cannot_be_cited_from_another_question(mesh):
     seat(base, t, "codex").return_work(author="codex", order=o["order"], note="Counted by trial division.")
     src = x.create(author="codex", type="source", inv=inv2, fields={"record": f"{base}/q/primes", "node": rs1})
     assert "1229" in json.dumps(src)                                   # returned: it can be cited
+
+
+def post(url, token, body):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, r.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8")
+
+
+def test_a_sealed_token_learns_nothing_by_guessing(mesh):
+    """A right guess of a sealed number answers like a wrong one, through reads, refused writes, and writes under
+    another name than the order's (the token is what is sealed)."""
+    m, base, t = mesh
+    c, inv, h1, rs1 = setup_lead(base, t)
+    c.issue_work(author="claude", inv=inv, target="H1", assignee="codex", objective=OBJECTIVE, blind=True)
+    g = f"{base}/q/primes/api/graph"
+
+    def answers(x):
+        claim = {"op": "create", "type": "claim", "inv": inv, "fields": {
+            "statement": f"There are {x} primes below 10,000.", "scope": "the integers below 10,000", "kind": "finding",
+            "measurements": [{"result": rs1, "key": "count"}]}}
+        out = [get(f"{g}/resolve?ref={x}", t["codex"]), get(f"{g}/node/{x}", ""),
+               post(f"{g}/write", t["codex"], {"op": "create", "author": "codex", "type": f"t {x}", "inv": inv, "fields": {}}),
+               post(f"{g}/write", t["codex"], {**claim, "author": "codex"}),
+               post(f"{g}/write", t["codex"], {**claim, "author": "probe"})]
+        return [(st, body.replace(str(x), "<X>")) for st, body in out]
+    right, wrong = answers(1229), answers(1231)
+    assert right == wrong
+    assert right[4][0] == 400 and "sealed from you" in right[4][1]       # the other name is sealed too
